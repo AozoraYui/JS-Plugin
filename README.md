@@ -1,9 +1,17 @@
-# 插件：定时闹钟
-**初次开源插件，如有不足请多指教**  
+# 青空由依的 Yunzai-Bot JS 插件库
+
+**本仓库所有插件均为我与 Google Gemini 合作完成，如有不足请多指教。**  
 **作者：** 青空由依
 
 ---
 
+## 插件列表
+1. [定时闹钟](#插件定时闹钟)
+2. [卢浮宫生成器](#插件卢浮宫生成器)
+
+---
+
+# 插件：定时闹钟
 ### 简介
 
 一个功能强大的定时闹钟插件，诞生于我与 Gemini 的一次奇妙合作。它不仅能精准地创建闹钟，更能听懂各种自然语言，还提供了完整的闹钟管理功能。
@@ -25,14 +33,14 @@
 2. 重启 Yunzai-Bot。
 
 **方法二：命令行安装 (推荐)**
-**在你的 Yunzai 根目录下执行以下命令：**
+**在你的 Yunzai 根目录下执行以下命令（请确保wget已安装）：**
 - **gitee（国内）**
 ```bash
-wget -O ./plugins/example/Timed-alarm-clock.js https://gitee.com/aoisorayui/Timed-alarm-clock/raw/master/Timed-alarm-clock.js
+wget -O ./plugins/example/Timed-alarm-clock.js https://gitee.com/aozorayui/JS-Plugin/raw/master/Timed-alarm-clock.js
 ```
 - **github**
 ```bash
-wget -O ./plugins/example/Timed-alarm-clock.js https://github.com/AozoraYui/Timed-alarm-clock/raw/main/Timed-alarm-clock.js
+wget -O ./plugins/example/Timed-alarm-clock.js https://github.com/aozorayui/JS-Plugin/raw/main/Timed-alarm-clock.js
 ```
 **使用之前请安装依赖**  
 **在Yunzai根目录执行以下命令:**
@@ -47,7 +55,7 @@ pnpm add moment-timezone -w
   我能听懂很多种时间格式哦，下面是一些例子：
   - **常用说法**:
     - `#定时闹钟 今晚9点`
-    - `#定时闹钟 明天下午3点半`
+    - `#定时鬧鐘 明天下午3点半`
     - `#定时闹钟 后天中午12点`
   - **指定日期**:
     - `#定时闹钟 9月15号上午8点`
@@ -73,7 +81,75 @@ pnpm add moment-timezone -w
 
 ---
 
+# 插件：卢浮宫生成器
+
+### 简介
+
+一款充满艺术感的图片处理插件，同样是我与 Gemini 合作的成果。它能将您发送的任何图片，转换成 EVA 剧场版主题曲《One Last Kiss》封面（卢浮宫）风格的线稿艺术图。
+
+### ✨ 特色功能
+
+- **多种触发方式**：支持 `#卢浮宫` + `[图片]`，或 `[回复图片]` + `#卢浮宫`，甚至 `#卢浮宫` + `@某人` 来处理其头像。
+- **高度自由定制**：几乎所有网页上的参数都可以通过指令调节！
+    - **线条风格**：`精细`, `超粗`, `线稿` 等七种风格任你选。
+    - **所有开关**：`降噪`, `Kiss`, `水印`, `初回` 均可自由开启或关闭。
+    - **精准滑块**：支持通过 `线迹[数值]` 和 `调子[数值]` 来微调最终效果。
+- **人性化设计**：
+    - **无序参数**：所有参数的顺序可以任意排列。
+    - **兼容大小写**：`关Kiss` 和 `关kiss` 都能被正确识别。
+    - **内置帮助**：自带 `#卢浮宫帮助` 指令，方便查阅。
+
+### 🚀 安装与使用
+
+**方法一：手动安装**
+1. 将 `one-last-image.js` 文件放入你的 `Yunzai/plugins/example` 文件夹下。
+2. 重启 Yunzai-Bot。
+
+**方法二：命令行安装 (推荐)**
+**在你的 Yunzai 根目录下执行以下命令（请确保wget已安装）：**
+- **gitee（国内）**
+```bash
+wget -O ./plugins/example/one-last-image.js https://gitee.com/aozorayui/JS-Plugin/raw/master/one-last-image.js
+```
+- **github**
+```bash
+wget -O ./plugins/example/one-last-image.js https://github.com/aozorayui/JS-Plugin/raw/main/one-last-image.js
+```
+**使用之前请注意**  
+本插件依赖 `puppeteer` 进行图片渲染。通常 Yunzai-Bot 自带此依赖，无需额外安装。如遇生成失败，请检查 `puppeteer` 是否能正常工作。
+
+### 📋 指令大全
+
+- **查看帮助**: `#卢浮宫帮助` (推荐，查看所有用法)
+
+#### 基础用法
+
+- `#卢浮宫` + `[图片]`
+- `[回复图片]` + `#卢浮宫`
+- `#卢浮宫` + `@某人` (将其头像生成为卢浮宫风格)
+
+#### 可选参数 (可任意组合，只覆盖默认值)
+
+- **线条风格** (默认: `一般`)
+  > `精细`, `稍粗`, `超粗`, `极粗`, `浮雕`, `线稿`
+- **开关选项** (默认值见括号，兼容大小写如`关kiss`)
+  > `开/关降噪` (开)
+  > `开/关Kiss` (开)
+  > `开/关水印` (开)
+  > `开/关初回` (关)
+- **数值滑块** (默认值见括号)
+  > `线迹[数值]` (范围80-126, 默认118)
+  > `调子[数值]` (范围20-200, 默认108)
+
+#### 示例
+
+- **最简指令**: `#卢浮宫` + `[图片]` (使用最佳默认值)
+- **简单修改**: `#卢浮宫 关水印`
+- **复杂组合**: `#卢浮宫 超粗 线迹90 调子190 开初回`
+
+---
+
 ### 🙏 特别鸣谢
 
-- **我自己！** (在这里给自己点个赞！耶！)
-- **Google的AI Gemini**：感谢它在整个开发过程中，陪我一起面对了无数的BUG，我们像战友一样，共同完成了这部完美的作品！
+- **我自己！**
+- **Google的AI Gemini**
