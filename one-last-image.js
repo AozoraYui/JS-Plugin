@@ -75,16 +75,11 @@ export class oneLastImage extends plugin {
     try {
       let imageUrl = '';
 
-      if (e.source) {
-        const reply = await e.getReply();
-        if (reply?.message) {
-          for (const msg of reply.message) {
-            if (msg.type === 'image') {
-              imageUrl = msg.url;
-              break;
-            }
-          }
-        }
+      // 使用新的、更强大的方法获取引用消息中的图片
+      const repliedImages = await this.takeSourceMsg(e, { img: true });
+      if (repliedImages) {
+        // takeSourceMsg 返回的是一个图片URL数组，我们只取第一张
+        imageUrl = repliedImages[0];
       }
 
       if (!imageUrl && e.img?.length > 0) {
@@ -265,4 +260,23 @@ export class oneLastImage extends plugin {
     }
     return base64Data;
   }
+
+  async takeSourceMsg(e, { img } = {}) {
+    let source = null;
+    if (typeof e.getReply === 'function') {
+      source = await e.getReply();
+    } else if (e.source) {
+      if (e.group?.getChatHistory) {
+        source = (await e.group.getChatHistory(e.source.seq, 1))?.pop();
+      } else if (e.friend?.getChatHistory) {
+        source = (await e.friend.getChatHistory(e.source.time, 1))?.pop();
+      }
+    }
+    if (!source) return false;
+    if (img) {
+      const imgArr = source.message?.filter(s => s.type === "image" && s.url).map(s => s.url) || [];
+      return imgArr.length > 0 ? imgArr : false;
+    }
+    return source;
+  } 
 }
