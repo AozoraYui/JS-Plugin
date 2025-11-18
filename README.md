@@ -152,5 +152,5 @@ wget -O ./plugins/example/one-last-image.js https://github.com/aozorayui/JS-Plug
 
 ### 🙏 特别鸣谢
 
-- **我自己！**
-- **Google的AI Gemini**
+- **[itorr/one-last-image](https://github.com/itorr/one-last-image)** (核心功能来源)
+  - [生成器地址](https://lab.magiconch.com/one-last-image/)
