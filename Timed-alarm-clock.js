@@ -253,7 +253,11 @@ export class AlarmClock extends plugin {
 提醒对象：${targetName}
 创建人：${setterName}
 内容：“${alarm.content}”`;
-      forwardMsg.push(msg);
+      forwardMsg.push({
+        message: `${i + 1}. [${timeDisplay}]\n提醒对象：${targetName}\n创建人：${setterName}\n内容：“${alarm.content}”`,
+        nickname: Bot.nickname,
+        user_id: Bot.uin,
+      });
     }
 
     if (forwardMsg.length > 1) {
@@ -319,7 +323,11 @@ export class AlarmClock extends plugin {
             timeDisplay = moment(alarm.time).format("MM-DD HH:mm:ss");
         }
         let msg = `[${timeDisplay}] 提醒 ${targetName}(${alarm.target_id})\n创建人：${setterName}(${alarm.setter_id})\n内容：“${alarm.content}”`;
-        forwardMsg.push(msg);
+        forwardMsg.push({
+            message: `[${timeDisplay}] 提醒 ${targetName}(${alarm.target_id})\n创建人：${setterName}(${alarm.setter_id})\n内容：“${alarm.content}”`,
+            nickname: Bot.nickname,
+            user_id: Bot.uin,
+        });
       }
     }
 
@@ -350,7 +358,11 @@ export class AlarmClock extends plugin {
                 timeDisplay = moment(alarm.time).format("MM-DD HH:mm:ss");
             }
             let msg = `[${timeDisplay}] 提醒 ${targetName}(${alarm.target_id})\n创建人：${setterName}(${alarm.setter_id})\n内容：“${alarm.content}”`;
-            forwardMsg.push(msg);
+            forwardMsg.push({
+                message: `[${timeDisplay}] 提醒 ${targetName}(${alarm.target_id})\n创建人：${setterName}(${alarm.setter_id})\n内容：“${alarm.content}”`,
+                nickname: Bot.nickname,
+                user_id: Bot.uin,
+            });
         }
     }
     
