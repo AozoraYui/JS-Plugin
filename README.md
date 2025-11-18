@@ -2,7 +2,8 @@
 
 **本仓库所有插件均为我与 Google Gemini 合作完成，如有不足请多指教。**  
 **作者：** 青空由依
-
+---
+![Repo Views](https://count.getloli.com/get/@AozoraYui_JS_Plugin?theme=rule34)
 ---
 
 ## 插件列表
