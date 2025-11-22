@@ -249,15 +249,9 @@ export class AlarmClock extends plugin {
         timeDisplay = moment(alarm.time).format("MM-DD HH:mm:ss");
       }
 
-      let msg = `${i + 1}. [${timeDisplay}]
-提醒对象：${targetName}
-创建人：${setterName}
-内容：“${alarm.content}”`;
-      forwardMsg.push({
-        message: `${i + 1}. [${timeDisplay}]\n提醒对象：${targetName}\n创建人：${setterName}\n内容：“${alarm.content}”`,
-        nickname: Bot.nickname,
-        user_id: Bot.uin,
-      });
+      let msg = `${i + 1}. [${timeDisplay}]\n提醒对象：${targetName}\n创建人：${setterName}\n内容：“${alarm.content}”`;
+      // 直接 push 字符串，common.makeForwardMsg 会自动适配 NapCat 和 ICQQ
+      forwardMsg.push(msg);
     }
 
     if (forwardMsg.length > 1) {
@@ -323,11 +317,8 @@ export class AlarmClock extends plugin {
             timeDisplay = moment(alarm.time).format("MM-DD HH:mm:ss");
         }
         let msg = `[${timeDisplay}] 提醒 ${targetName}(${alarm.target_id})\n创建人：${setterName}(${alarm.setter_id})\n内容：“${alarm.content}”`;
-        forwardMsg.push({
-            message: `[${timeDisplay}] 提醒 ${targetName}(${alarm.target_id})\n创建人：${setterName}(${alarm.setter_id})\n内容：“${alarm.content}”`,
-            nickname: Bot.nickname,
-            user_id: Bot.uin,
-        });
+        // 直接 push 字符串，兼容性最好
+        forwardMsg.push(msg);
       }
     }
 
@@ -738,7 +729,8 @@ export class AlarmClock extends plugin {
       if (!isRelative) {
         const timeStr = this.preprocessTimeStr(timeStrRaw);
         logger.info(`[定时闹钟] 时间解析: "${timeStrRaw}" -> "${timeStr}"`);
-        alarmTime = moment.tz(timeStr, 'YYYY-MM-DD HH:mm:ss', true, 'Asia/Shanghai');
+        // 修改：传入一个格式数组，支持 "年月日 时:分" 和 "年月日 时:分:秒" 两种格式
+        alarmTime = moment.tz(timeStr, ['YYYY-MM-DD HH:mm', 'YYYY-MM-DD HH:mm:ss'], true, 'Asia/Shanghai');
       } else {
         logger.info(`[定时闹钟] 识别为相对时间: "${timeStrRaw}"`);
       }
