@@ -113,7 +113,7 @@ export class oneLastImage extends plugin {
       if (base64Image) {
         await e.reply(segment.image(base64Image));
       } else {
-        await e.reply('生成失败了，可能是网站的防护机制导致无法处理，请稍后再试 T_T');
+        await e.reply('生成失败了，可能是图片下载或本地渲染失败，请稍后再试 T_T');
       }
 
     } catch (error) {
