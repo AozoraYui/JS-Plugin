@@ -96,6 +96,7 @@ pnpm add moment-timezone -w
     - **线条风格**：`精细`, `超粗`, `线稿` 等七种风格任你选。
     - **所有开关**：`降噪`, `Kiss`, `水印`, `初回` 均可自由开启或关闭。
     - **精准滑块**：支持通过 `线迹[数值]` 和 `调子[数值]` 来微调最终效果。
+- **本地处理**：算法、铅笔纹理和水印均已内嵌，不再依赖外部生成网站；仅使用 Yunzai 自带的 Puppeteer 执行本地 Canvas。
 - **人性化设计**：
     - **无序参数**：所有参数的顺序可以任意排列。
     - **兼容大小写**：`关Kiss` 和 `关kiss` 都能被正确识别。
@@ -118,7 +119,9 @@ wget -O ./plugins/example/one-last-image.js https://gitee.com/aozorayui/JS-Plugi
 wget -O ./plugins/example/one-last-image.js https://github.com/aozorayui/JS-Plugin/raw/main/one-last-image.js
 ```
 **使用之前请注意**  
-本插件依赖 `puppeteer` 进行图片渲染。通常 Yunzai-Bot 自带此依赖，无需额外安装。如遇生成失败，请检查 `puppeteer` 是否能正常工作。
+本插件依赖 `puppeteer` 执行本地 Canvas 渲染。通常 Yunzai-Bot 自带此依赖，无需额外安装；插件本身不再请求外部卢浮宫生成服务。如遇生成失败，请检查 `puppeteer` 是否能正常工作。
+
+本地算法与素材改编自 [itorr/one-last-image](https://github.com/itorr/one-last-image)，遵循其 MIT License。
 
 ### 📋 指令大全
 
