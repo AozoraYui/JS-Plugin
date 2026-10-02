@@ -1,7 +1,10 @@
-import { segment } from "icqq";
+import { segment } from "oicq";
 import plugin from '../../lib/plugins/plugin.js';
 import common from '../../lib/common/common.js';
 import puppeteer from '../../lib/puppeteer/puppeteer.js'; // 【新增】引入 Yunzai 的浏览器渲染核心
+import fetch from 'node-fetch';
+import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import fs from 'fs';
 import path from 'path';
 
@@ -15,6 +18,7 @@ const allowSelfMentionNotify = false;
 // 确保插件数据目录、JSON 数据和临时 HTML 存放的目录存在
 const noticeDataDir = path.join(process.cwd(), 'data', 'Notice_Plugin');
 const atDataDir = path.join(noticeDataDir, 'whoAtMe');
+const atMediaDir = path.join(atDataDir, 'media');
 const calledDataDir = path.join(noticeDataDir, 'whoCalledMe');
 const aliasDataDir = path.join(noticeDataDir, 'Alias');
 const getAliasFilePath = userId => path.join(aliasDataDir, `${String(userId)}_aliases.json`);
@@ -40,6 +44,9 @@ const reservedAliasWords = new Set([
 
 if (!fs.existsSync(atDataDir)) {
     fs.mkdirSync(atDataDir, { recursive: true });
+}
+if (!fs.existsSync(atMediaDir)) {
+    fs.mkdirSync(atMediaDir, { recursive: true });
 }
 if (!fs.existsSync(calledDataDir)) {
     fs.mkdirSync(calledDataDir, { recursive: true });
@@ -236,6 +243,73 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+function getImageValue(value) {
+    if (typeof value === 'string') return value;
+    return value?.url || value?.data?.url || value?.file || value?.data?.file || '';
+}
+
+function getCachedImagePath(url) {
+    const hash = createHash('sha256').update(String(url)).digest('hex');
+    return path.join(atMediaDir, `${hash}.img`);
+}
+
+async function cacheImageUrl(value) {
+    const imageUrl = getImageValue(value);
+    if (!/^https?:\/\//i.test(imageUrl)) return imageUrl;
+
+    const cachePath = getCachedImagePath(imageUrl);
+    if (!fs.existsSync(cachePath)) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
+            const response = await fetch(imageUrl, { signal: controller.signal });
+            if (!response.ok) return imageUrl;
+            const buffer = Buffer.from(await response.arrayBuffer());
+            if (!buffer.length) return imageUrl;
+            fs.writeFileSync(cachePath, buffer);
+        } catch (err) {
+            logger.debug?.(`图片缓存失败：${imageUrl}，${err.message}`);
+            return imageUrl;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+
+    return pathToFileURL(cachePath).href;
+}
+
+async function cacheRecordImages(records) {
+    let changed = false;
+    for (const record of records) {
+        for (const key of ['image']) {
+            if (!Array.isArray(record?.[key])) continue;
+            for (let index = 0; index < record[key].length; index++) {
+                const original = getImageValue(record[key][index]);
+                if (!original) continue;
+                const cached = await cacheImageUrl(original);
+                if (cached && cached !== original) {
+                    record[key][index] = cached;
+                    changed = true;
+                }
+            }
+        }
+
+        const replyImages = record?.reply?.images;
+        if (Array.isArray(replyImages)) {
+            for (let index = 0; index < replyImages.length; index++) {
+                const original = getImageValue(replyImages[index]);
+                if (!original) continue;
+                const cached = await cacheImageUrl(original);
+                if (cached && cached !== original) {
+                    replyImages[index] = cached;
+                    changed = true;
+                }
+            }
+        }
+    }
+    return changed;
+}
+
 function getMessageSegmentValue(segment, key) {
     return segment?.[key] ?? segment?.data?.[key];
 }
@@ -268,7 +342,7 @@ function getMessageText(message) {
 function getMessageImages(message) {
     return (Array.isArray(message) ? message : [])
         .filter(segment => segment?.type === 'image')
-        .map(segment => getMessageSegmentValue(segment, 'url'))
+        .map(segment => getImageValue(getMessageSegmentValue(segment, 'url') || segment))
         .filter(Boolean)
         .map(String);
 }
@@ -315,7 +389,7 @@ async function getReplySnapshot(e) {
         userId: sourceUserId,
         name: sourceName,
         text: sourceText,
-        images: getMessageImages(sourceMessage)
+        images: await Promise.all(getMessageImages(sourceMessage).map(cacheImageUrl))
     };
 }
 
@@ -469,7 +543,7 @@ export class noticePlugin extends plugin {
                 }
             }
             if (msg.type === 'reply') isReply = true;
-            if (msg.type === 'image') imgUrls.push(msg.url);
+            if (msg.type === 'image') imgUrls.push(getImageValue(msg));
             if (msg.type === 'face') faceId.push(msg.id);
             if (msg.type === 'record') hasVoice = true;
             if (msg.type === 'video') hasVideo = true;
@@ -506,6 +580,8 @@ export class noticePlugin extends plugin {
 
         // 记录真实的数字 QQ 艾特、@全体，或被引用消息的作者。
         if (!AtQQ.length && !hasAtAll) return false;
+
+        imgUrls = await Promise.all(imgUrls.filter(Boolean).map(cacheImageUrl));
 
         const timestamp = Date.now();
         const msgData = {
@@ -620,8 +696,6 @@ export class noticePlugin extends plugin {
                 if (image) imageMessages.push(image);
             } catch (err) {
                 logger.error(`外号呼叫记录第 ${pageNumber} 页渲染失败`, err);
-            } finally {
-                fs.rmSync(htmlPath, { force: true });
             }
         }
 
@@ -681,6 +755,10 @@ export class noticePlugin extends plugin {
         let personal = groupData[targetQQ] || [];
         let everyone = groupData['all'] || [];
         let combinedData = [...personal, ...everyone];
+        const imagesChanged = await cacheRecordImages(combinedData);
+        if (imagesChanged) {
+            fs.writeFileSync(filePath, JSON.stringify(groupData, null, 2), 'utf8');
+        }
 
         if (combinedData.length === 0) {
             let name = (targetQQ === String(e.user_id)) ? '你' : 'TA';
@@ -690,7 +768,10 @@ export class noticePlugin extends plugin {
 
         // 排序：从新到旧
         combinedData.sort((a, b) => b.timestamp - a.timestamp);
-        if (combinedData.length > 20) combinedData = combinedData.slice(0, 20);
+        const pageSize = 16;
+        const totalPages = Math.ceil(combinedData.length / pageSize);
+        const imageMessages = [];
+        const renderId = `${e.group_id}_${targetQQ}_${Date.now()}`;
 
         // 渲染名字：如果是查自己就显示“我”，查别人就显示对方的名字
         let targetName = '我';
@@ -699,8 +780,12 @@ export class noticePlugin extends plugin {
             targetName = member?.card || member?.nickname || targetQQ;
         }
 
-        // --- 渲染 HTML (保持你修改后的背景和样式) ---
-        let msgHtml = combinedData.map(item => {
+        for (let pageStart = 0; pageStart < combinedData.length; pageStart += pageSize) {
+            const pageNumber = Math.floor(pageStart / pageSize) + 1;
+            const pageRecords = combinedData.slice(pageStart, pageStart + pageSize);
+
+            // --- 渲染 HTML (保持你修改后的背景和样式) ---
+            let msgHtml = pageRecords.map(item => {
             const replyData = item.reply && typeof item.reply === 'object' ? item.reply : null;
             let replyHtml = '';
             if (replyData) {
@@ -743,20 +828,43 @@ export class noticePlugin extends plugin {
 
         // 这一段 htmlString 建议保留你已经在用的、带背景图的那个版本
         // 只需要确保里面的 ${targetQQ} 和 ${targetName} 变量正确即可
-        let htmlString = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><style>:root { --theme-color: #7b8cf6; --bg-gradient: linear-gradient(135deg, #eef2fb 0%, #e0e7ff 100%); } body { font-family: 'PingFang SC', sans-serif; background: var(--bg-gradient); margin: 0; padding: 40px; width: 650px; } .container { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(112, 128, 176, 0.15); border: 1px solid white; } .header { display: flex; align-items: center; padding-bottom: 25px; margin-bottom: 25px; border-bottom: 2px dashed #e5e7eb; } .header img { width: 68px; height: 68px; border-radius: 50%; margin-right: 18px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); } .header-info h2 { margin: 0 0 6px 0; font-size: 24px; color: #1f2937; } .group-tag { font-size: 12px; background: var(--theme-color); color: white; padding: 3px 8px; border-radius: 6px; } .header-info p { margin: 0; font-size: 15px; color: #6b7280; } .header-info strong { color: var(--theme-color); } .msg-list { display: flex; flex-direction: column; gap: 28px; } .msg-item { display: flex; gap: 16px; } .avatar { width: 46px; height: 46px; border-radius: 12px; object-fit: cover; } .msg-content { flex: 1; max-width: calc(100% - 62px); } .sender-info { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; } .sender-name { font-weight: 600; font-size: 15px; color: #374151; } .msg-time { font-size: 12px; color: #9ca3af; } .bubble { background: white; padding: 14px 18px; border-radius: 0 16px 16px 16px; font-size: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); border: 1px solid #f3f4f6; display: inline-block; max-width: 100%; } .reply-box { background: #f8fafc; border-left: 3px solid #94a3b8; padding: 6px 12px; border-radius: 4px 8px 8px 4px; font-size: 13px; color: #64748b; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; } .reply-preview { background: #f8fafc; border-left: 3px solid #94a3b8; padding: 8px 10px; border-radius: 4px 8px 8px 4px; margin-bottom: 8px; color: #64748b; } .reply-preview-header { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #475569; margin-bottom: 5px; } .reply-preview-avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; } .reply-preview-label { color: #94a3b8; font-size: 11px; } .reply-preview-text { font-size: 13px; line-height: 1.45; white-space: normal; word-break: break-word; } .reply-preview-image { max-width: 180px; max-height: 100px; border-radius: 6px; object-fit: cover; margin-top: 6px; display: block; } .empty-at { color: #9ca3af; font-style: italic; } .media-hint { color: var(--theme-color); font-size: 14px; margin-top: 8px; background: #f0f5ff; padding: 6px 12px; border-radius: 8px; } .msg-img { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; } .footer { margin-top: 35px; text-align: center; color: #cbd5e1; font-size: 12px; }</style></head><body><div class="container"><div class="header"><img src="https://q1.qlogo.cn/g?b=qq&nk=${targetQQ}&s=100"><div class="header-info"><h2>艾特数据报告 <span class="group-tag">${escapeHtml(e.group_name || '本群')}</span></h2><p>历史记录中，<strong>${escapeHtml(targetName)}</strong> 共有 <strong>${combinedData.length}</strong> 条呼叫记录</p></div></div><div class="msg-list">${msgHtml}</div><div class="footer">Generated by 提醒助手 • ${new Date().toLocaleString()}</div></div></body></html>`;
+        let htmlString = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><style>:root { --theme-color: #7b8cf6; --bg-gradient: linear-gradient(135deg, #eef2fb 0%, #e0e7ff 100%); } body { font-family: 'PingFang SC', sans-serif; background: var(--bg-gradient); margin: 0; padding: 40px; width: 650px; } .container { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(112, 128, 176, 0.15); border: 1px solid white; } .header { display: flex; align-items: center; padding-bottom: 25px; margin-bottom: 25px; border-bottom: 2px dashed #e5e7eb; } .header img { width: 68px; height: 68px; border-radius: 50%; margin-right: 18px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); } .header-info h2 { margin: 0 0 6px 0; font-size: 24px; color: #1f2937; } .group-tag { font-size: 12px; background: var(--theme-color); color: white; padding: 3px 8px; border-radius: 6px; } .header-info p { margin: 0; font-size: 15px; color: #6b7280; } .header-info strong { color: var(--theme-color); } .msg-list { display: flex; flex-direction: column; gap: 28px; } .msg-item { display: flex; gap: 16px; } .avatar { width: 46px; height: 46px; border-radius: 12px; object-fit: cover; } .msg-content { flex: 1; max-width: calc(100% - 62px); } .sender-info { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; } .sender-name { font-weight: 600; font-size: 15px; color: #374151; } .msg-time { font-size: 12px; color: #9ca3af; } .bubble { background: white; padding: 14px 18px; border-radius: 0 16px 16px 16px; font-size: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); border: 1px solid #f3f4f6; display: inline-block; max-width: 100%; } .reply-box { background: #f8fafc; border-left: 3px solid #94a3b8; padding: 6px 12px; border-radius: 4px 8px 8px 4px; font-size: 13px; color: #64748b; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; } .reply-preview { background: #f8fafc; border-left: 3px solid #94a3b8; padding: 8px 10px; border-radius: 4px 8px 8px 4px; margin-bottom: 8px; color: #64748b; } .reply-preview-header { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #475569; margin-bottom: 5px; } .reply-preview-avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; } .reply-preview-label { color: #94a3b8; font-size: 11px; } .reply-preview-text { font-size: 13px; line-height: 1.45; white-space: normal; word-break: break-word; } .reply-preview-image { max-width: 180px; max-height: 100px; border-radius: 6px; object-fit: cover; margin-top: 6px; display: block; } .empty-at { color: #9ca3af; font-style: italic; } .media-hint { color: var(--theme-color); font-size: 14px; margin-top: 8px; background: #f0f5ff; padding: 6px 12px; border-radius: 8px; } .msg-img { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; } .footer { margin-top: 35px; text-align: center; color: #cbd5e1; font-size: 12px; }</style></head><body><div class="container"><div class="header"><img src="https://q1.qlogo.cn/g?b=qq&nk=${targetQQ}&s=100"><div class="header-info"><h2>艾特数据报告 <span class="group-tag">${e.group_name || '本群'}</span></h2><p>历史记录中，<strong>${targetName}</strong> 共有 <strong>${combinedData.length}</strong> 条呼叫记录</p></div></div><div class="msg-list">${msgHtml}</div><div class="footer">Generated by 提醒助手 • ${new Date().toLocaleString()}</div></div></body></html>`;
 
-        const htmlPath = path.join(atDataDir, `temp_render_${e.group_id}.html`);
-        fs.writeFileSync(htmlPath, htmlString, 'utf8');
-        try {
-            let img = await puppeteer.screenshot(`whoAtMe_${e.group_id}`, { tplFile: htmlPath, data: {} });
-            if (img) await e.reply(img);
-        } catch (err) {
-            logger.error(err);
-        } finally {
-            fs.rmSync(htmlPath, { force: true });
+            const htmlPath = path.join(
+                atDataDir,
+                `temp_render_${renderId}_${pageNumber}.html`
+            );
+            fs.writeFileSync(htmlPath, htmlString, 'utf8');
+            try {
+                const image = await puppeteer.screenshot(
+                    `whoAtMe_${renderId}_${pageNumber}`,
+                    { tplFile: htmlPath, data: {} }
+                );
+                if (image) imageMessages.push(image);
+            } catch (err) {
+                logger.error(`艾特记录第 ${pageNumber} 页渲染失败`, err);
+            } finally {
+                fs.rmSync(htmlPath, { force: true });
+            }
         }
-        
-        return true; 
+
+        if (imageMessages.length === 0) {
+            await e.reply('艾特记录图片生成失败，请稍后再试~', true);
+            return true;
+        }
+
+        if (imageMessages.length === 1) {
+            await e.reply(imageMessages[0]);
+            return true;
+        }
+
+        const forwardMsg = await common.makeForwardMsg(
+            e,
+            imageMessages,
+            `📣 本群艾特记录（共 ${imageMessages.length} 页）`
+        );
+        await e.reply(forwardMsg);
+        return true;
     }
 
     async aliasHelp(e) {
@@ -779,7 +887,7 @@ export class noticePlugin extends plugin {
             '#清除全部艾特数据 —— 清空所有群的艾特记录',
             '',
             '【记录查询】',
-            '谁艾特我 —— 查看历史艾特记录（最多显示20条）',
+            '谁艾特我 —— 查看历史艾特记录（每张图片最多显示16条）',
             '谁艾特他/她/它 —— 艾特目标用户后查看对方的艾特记录',
             '谁叫我了 —— 查看当前群里呼叫过你外号的历史记录',
             '谁叫他/她/它了 @用户 —— 查看指定用户被呼叫外号的历史记录',
