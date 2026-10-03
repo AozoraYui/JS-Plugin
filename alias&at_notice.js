@@ -8,21 +8,18 @@ import { pathToFileURL } from 'node:url';
 import fs from 'fs';
 import path from 'path';
 
-// ---- 【配置区】 ----
-
-// 是否允许消息发送者艾特自己或引用自己的消息时收到私聊提醒。
-const allowSelfMentionNotify = false;
-
-// -------------------
-
 // 确保插件数据目录、JSON 数据和临时 HTML 存放的目录存在
 const noticeDataDir = path.join(process.cwd(), 'data', 'Notice_Plugin');
 const atDataDir = path.join(noticeDataDir, 'whoAtMe');
 const atMediaDir = path.join(atDataDir, 'media');
 const calledDataDir = path.join(noticeDataDir, 'whoCalledMe');
 const aliasDataDir = path.join(noticeDataDir, 'Alias');
+const notifyDataDir = path.join(noticeDataDir, 'NotifySettings');
 const getAliasFilePath = userId => path.join(aliasDataDir, `${String(userId)}_aliases.json`);
+const getNotifyFilePath = userId => path.join(notifyDataDir, `${String(userId)}.json`);
 const aliasMaxLength = 32;
+const forwardUserLimit = 20;
+const forwardCharLimit = 5000;
 const reservedAliasWords = new Set([
     '外号设置',
     '设置外号',
@@ -39,7 +36,13 @@ const reservedAliasWords = new Set([
     '谁叫她了',
     '谁叫它了',
     '清除艾特数据',
-    '清除全部艾特数据'
+    '清除全部艾特数据',
+    '外号提醒开启',
+    '外号提醒关闭',
+    '艾特提醒开启',
+    '艾特提醒关闭',
+    '自艾特提醒开启',
+    '自艾特提醒关闭'
 ]);
 
 if (!fs.existsSync(atDataDir)) {
@@ -53,6 +56,9 @@ if (!fs.existsSync(calledDataDir)) {
 }
 if (!fs.existsSync(aliasDataDir)) {
     fs.mkdirSync(aliasDataDir, { recursive: true });
+}
+if (!fs.existsSync(notifyDataDir)) {
+    fs.mkdirSync(notifyDataDir, { recursive: true });
 }
 
 function cleanAlias(value) {
@@ -133,6 +139,96 @@ function readAllAliasFiles() {
     );
 }
 
+function getNotifySettings(userId) {
+    const defaults = {
+        user_id: String(userId),
+        alias_notify: false,
+        mention_notify: false,
+        self_mention_notify: false
+    };
+    const filePath = getNotifyFilePath(userId);
+    if (!fs.existsSync(filePath)) return defaults;
+
+    try {
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return {
+            ...defaults,
+            alias_notify: data?.alias_notify === true,
+            mention_notify: data?.mention_notify === true,
+            self_mention_notify: data?.self_mention_notify === true
+        };
+    } catch (err) {
+        logger.error(`提醒配置读取失败：${filePath}`, err);
+        return defaults;
+    }
+}
+
+function writeNotifySettings(userId, settings) {
+    const filePath = getNotifyFilePath(userId);
+    const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    const data = {
+        user_id: String(userId),
+        alias_notify: settings.alias_notify === true,
+        mention_notify: settings.mention_notify === true,
+        self_mention_notify: settings.self_mention_notify === true,
+        updated_at: Date.now()
+    };
+
+    fs.writeFileSync(tempPath, JSON.stringify(data, null, 2), 'utf8');
+    fs.renameSync(tempPath, filePath);
+}
+
+function getNotifySettingKey(type) {
+    return {
+        '外号提醒': 'alias_notify',
+        '艾特提醒': 'mention_notify',
+        '自艾特提醒': 'self_mention_notify'
+    }[type];
+}
+
+function updateNotifySetting(userId, type, enabled) {
+    const key = getNotifySettingKey(type);
+    if (!key) return null;
+
+    const settings = getNotifySettings(userId);
+    settings[key] = enabled;
+    writeNotifySettings(userId, settings);
+    return settings;
+}
+
+function formatNotifyStatus(settings) {
+    const status = value => value ? '开启' : '关闭';
+    return [
+        `外号提醒：${status(settings.alias_notify)}`,
+        `艾特提醒：${status(settings.mention_notify)}`,
+        `自艾特提醒：${status(settings.self_mention_notify)}`
+    ];
+}
+
+function splitForwardMessages(messages) {
+    const chunks = [];
+    let current = [];
+    let currentLength = 0;
+
+    for (const message of messages) {
+        const messageLength = String(message).length;
+        if (current.length > 0 && (
+            current.length >= forwardUserLimit ||
+            currentLength + messageLength > forwardCharLimit
+        )) {
+            chunks.push(current);
+            current = [];
+            currentLength = 0;
+        }
+
+        current.push(message);
+        currentLength += messageLength;
+    }
+
+    if (current.length > 0) chunks.push(current);
+    return chunks;
+}
+
 function validateAlias(alias) {
     const cleanedAlias = cleanAlias(alias);
     const key = aliasKey(cleanedAlias);
@@ -149,7 +245,7 @@ function validateAlias(alias) {
 }
 
 function isAliasCommand(text) {
-    return /^#?(外号设置|外号删除|我的外号|查看外号|查看全部外号|设置外号|alias|外号帮助|谁叫(我|他|她|它)了|谁(艾特|@|at)(我|他|她|它)|(哪个逼|哪个扑街仔|哪个铺盖仔|哪个扑街|哪个铺盖|哪个屌毛|哪个叼毛)(艾特|@|at)我)/i.test(cleanAlias(text));
+    return /^#?(外号设置|外号删除|我的外号|查看外号|查看全部外号|设置外号|alias|外号帮助|外号提醒(?:\s*(?:开启|关闭|开|关))?|艾特提醒(?:\s*(?:开启|关闭|开|关))?|自艾特提醒(?:\s*(?:开启|关闭|开|关))?|设置(?:外号提醒|艾特提醒|自艾特提醒)(?:\s+.*)?|谁叫(我|他|她|它)了|谁(艾特|@|at)(我|他|她|它)|(哪个逼|哪个扑街仔|哪个铺盖仔|哪个扑街|哪个铺盖|哪个屌毛|哪个叼毛)(艾特|@|at)我)/i.test(cleanAlias(text));
 }
 
 function saveAliasForUser(userId, alias) {
@@ -401,7 +497,13 @@ async function notifyMentionedUsers(e, targetQQs, directAtQQs, msgData) {
     await Promise.allSettled(targetQQs.map(async targetQQ => {
         const normalizedTargetQQ = String(targetQQ);
         if (!/^\d+$/.test(normalizedTargetQQ) || normalizedTargetQQ === String(Bot.uin)) return;
-        if (!allowSelfMentionNotify && normalizedTargetQQ === String(e.user_id)) return;
+
+        const isSelfTarget = normalizedTargetQQ === String(e.user_id);
+        const settings = getNotifySettings(normalizedTargetQQ);
+        const notifyEnabled = isSelfTarget
+            ? settings.self_mention_notify
+            : settings.mention_notify;
+        if (!notifyEnabled) return;
 
         const isDirectAt = directTargets.has(normalizedTargetQQ);
         const isReplyTarget = replyTarget === normalizedTargetQQ;
@@ -502,6 +604,8 @@ export class noticePlugin extends plugin {
             priority: -114514, 
             rule: [
                 { reg: '^#?(alias/外号帮助|外号帮助|alias帮助)$', fnc: 'aliasHelp' },
+                { reg: '^#?(?:外号提醒|艾特提醒|自艾特提醒)\\s*(?:开启|关闭|开|关)$', fnc: 'setNotifyPreference' },
+                { reg: '^#?设置(?:外号提醒|艾特提醒|自艾特提醒)\\s+.+$', fnc: 'setNotifyPreferenceForUser', permission: 'master' },
                 { reg: '^#?(?:外号设置|设置外号|alias)(/(?:alias|外号))?(\\s+.*)?$', fnc: 'setAliasForUser' },
                 { reg: '^#?外号删除\\s*.+$', fnc: 'removeAlias' },
                 { reg: '^#?查看外号(?:\\s+.*)?$', fnc: 'viewAliases' },
@@ -873,17 +977,23 @@ export class noticePlugin extends plugin {
             '',
             '【普通用户】',
             '#外号设置 外号 —— 给自己设置外号，可重复设置多个',
-            '#查看外号 —— 查看自己设置的全部外号',
-            '#查看外号 @用户 —— 查看指定用户设置的全部外号',
+            '#查看外号 —— 查看自己设置的全部外号和提醒状态',
+            '#查看外号 @用户 —— 查看指定用户设置的全部外号和提醒状态',
             '#外号删除 外号 —— 删除自己设置的外号',
+            '#外号提醒开启/关闭 —— 开关自己的外号提及提醒',
+            '#艾特提醒开启/关闭 —— 开关别人艾特或引用自己的提醒',
+            '#自艾特提醒开启/关闭 —— 开关自己艾特或引用自己的提醒',
             '',
             '【外号提醒】',
-            '群消息单独发送外号时，机器人会在群内艾特对应用户；外号出现在更长句子中时群内静默，但仍会尝试私聊提醒并保存记录。',
-            '检测到明确艾特或引用消息时，也会尝试私聊提醒相关用户；是否成功取决于好友关系和平台权限。',
+            '外号和艾特提醒默认关闭；关闭时仍会保存记录，但不会主动群内艾特或私聊提醒。',
+            '提醒能否私聊成功取决于好友关系和平台权限。',
             '',
             '【主人专用】',
             '#外号设置/alias @用户 外号 —— 给指定用户设置外号',
-            '#查看全部外号 —— 查看所有用户的外号',
+            '#设置外号提醒 @用户 开启/关闭 —— 设置指定用户的外号提醒',
+            '#设置艾特提醒 @用户 开启/关闭 —— 设置指定用户的艾特提醒',
+            '#设置自艾特提醒 @用户 开启/关闭 —— 设置指定用户的自艾特提醒',
+            '#查看全部外号 —— 查看所有用户的外号和提醒状态，内容过多时分包合并发送',
             '#清除全部艾特数据 —— 清空所有群的艾特记录',
             '',
             '【记录查询】',
@@ -894,6 +1004,53 @@ export class noticePlugin extends plugin {
             '/clear_at —— 清除自己的艾特记录',
             '/clear_all —— 主人清除全部艾特记录'
         ].join('\n'));
+        return true;
+    }
+
+    async setNotifyPreference(e) {
+        const match = cleanAlias(e.msg || '').match(/^#?(外号提醒|艾特提醒|自艾特提醒)\s*(开启|关闭|开|关)$/i);
+        if (!match) return false;
+
+        const type = match[1];
+        const enabled = /^(开启|开)$/i.test(match[2]);
+        try {
+            updateNotifySetting(String(e.user_id), type, enabled);
+            await e.reply(`✅ ${type}已${enabled ? '开启' : '关闭'}。`, true);
+        } catch (err) {
+            logger.error(`提醒配置保存失败：${e.user_id}`, err);
+            await e.reply('提醒配置保存失败，请稍后再试~', true);
+        }
+        return true;
+    }
+
+    async setNotifyPreferenceForUser(e) {
+        if (!e.isMaster) {
+            await e.reply('暂无权限，只有主人才能设置其他用户的提醒开关', true);
+            return true;
+        }
+
+        const commandText = cleanAlias(e.msg || '');
+        const match = commandText.match(/^#?设置(外号提醒|艾特提醒|自艾特提醒)\s*(开启|关闭|开|关)$/i);
+        if (!match || !e.at || e.atBot) {
+            await e.reply('用法：#设置外号提醒 @用户 开启/关闭', true);
+            return true;
+        }
+
+        const targetUserId = String(e.at);
+        if (!/^\d+$/.test(targetUserId) || targetUserId === String(Bot.uin)) {
+            await e.reply('目标用户 QQ 号无效，不能设置机器人本身~', true);
+            return true;
+        }
+
+        const type = match[1];
+        const enabled = /^(开启|开)$/i.test(match[2]);
+        try {
+            updateNotifySetting(targetUserId, type, enabled);
+            await e.reply(`✅ 已将 ${targetUserId} 的${type}${enabled ? '开启' : '关闭'}。`, true);
+        } catch (err) {
+            logger.error(`提醒配置保存失败：${targetUserId}`, err);
+            await e.reply('提醒配置保存失败，请稍后再试~', true);
+        }
         return true;
     }
 
@@ -984,6 +1141,7 @@ export class noticePlugin extends plugin {
         }
 
         const aliases = readAliasFile(targetUserId);
+        const settings = getNotifySettings(targetUserId);
         const isSelf = targetUserId === String(e.user_id);
         let targetName = isSelf ? '你' : targetUserId;
         if (!isSelf && e.group?.pickMember) {
@@ -991,20 +1149,19 @@ export class noticePlugin extends plugin {
             targetName = member?.card || member?.nickname || targetUserId;
         }
 
-        if (aliases.length === 0) {
-            await e.reply(
-                isSelf
-                    ? '你目前还没有设置外号哦~\n可以使用：#外号设置 外号'
-                    : `${targetName} 目前还没有设置外号哦~`,
-                true
-            );
-            return true;
+        const lines = [
+            `📛 ${isSelf ? '你' : targetName}的外号`,
+            ...(aliases.length > 0
+                ? aliases.map((alias, index) => `${index + 1}. ${alias}`)
+                : ['暂无外号']),
+            '',
+            '🔔 提醒设置',
+            ...formatNotifyStatus(settings)
+        ];
+        if (aliases.length === 0 && isSelf) {
+            lines.splice(1, 0, '可以使用：#外号设置 外号');
         }
-
-        await e.reply([
-            `📛 ${isSelf ? '你' : targetName}设置了 ${aliases.length} 个外号：`,
-            ...aliases.map((alias, index) => `${index + 1}. ${alias}`)
-        ].join('\n'));
+        await e.reply(lines.join('\n'));
         return true;
     }
 
@@ -1015,15 +1172,22 @@ export class noticePlugin extends plugin {
             return true;
         }
 
-        const messages = entries.map(entry =>
-            `QQ：${entry.userId}\n外号：${entry.aliases.join('、')}`
-        );
-        const forwardMsg = await common.makeForwardMsg(
-            e,
-            messages,
-            `📛 全部外号（共 ${entries.length} 位用户）`
-        );
-        await e.reply(forwardMsg);
+        const messages = entries.map(entry => {
+            const settings = getNotifySettings(entry.userId);
+            return [
+                `QQ：${entry.userId}`,
+                `外号：${entry.aliases.join('、')}`,
+                ...formatNotifyStatus(settings)
+            ].join('\n');
+        });
+        const chunks = splitForwardMessages(messages);
+        for (let index = 0; index < chunks.length; index++) {
+            const title = chunks.length === 1
+                ? `📛 全部外号（共 ${entries.length} 位用户）`
+                : `📛 全部外号（第 ${index + 1}/${chunks.length} 组，共 ${entries.length} 位用户）`;
+            const forwardMsg = await common.makeForwardMsg(e, chunks[index], title);
+            await e.reply(forwardMsg);
+        }
         return true;
     }
 
@@ -1065,7 +1229,10 @@ export class noticePlugin extends plugin {
             }
         }
 
-        const standaloneUsers = matchedUsers.filter(user =>
+        const enabledUsers = matchedUsers.filter(user =>
+            getNotifySettings(user.userId).alias_notify
+        );
+        const standaloneUsers = enabledUsers.filter(user =>
             user.aliases.some(alias => messageText === cleanAlias(alias))
         );
         if (standaloneUsers.length > 0) {
@@ -1076,7 +1243,7 @@ export class noticePlugin extends plugin {
                     `（${user.aliases.join('、')}）`
                 );
             }
-            groupMessage.push('\n我已经尝试私聊提醒对应用户。');
+            groupMessage.push('\n我已经根据用户设置尝试私聊提醒。');
             try {
                 await e.reply(groupMessage);
             } catch (err) {
@@ -1085,7 +1252,7 @@ export class noticePlugin extends plugin {
         }
 
         const source = e.group_name ? `${e.group_name}(${e.group_id})` : String(e.group_id);
-        await Promise.allSettled(matchedUsers.map(async user => {
+        await Promise.allSettled(enabledUsers.map(async user => {
             if (String(user.userId) === String(Bot.uin)) return;
 
             const privateMessage = [
