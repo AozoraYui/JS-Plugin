@@ -604,8 +604,7 @@ export class noticePlugin extends plugin {
             priority: -114514, 
             rule: [
                 { reg: '^#?(alias/外号帮助|外号帮助|alias帮助)$', fnc: 'aliasHelp' },
-                { reg: '^#?(?:外号提醒|艾特提醒|自艾特提醒)\\s*(?:开启|关闭|开|关)$', fnc: 'setNotifyPreference' },
-                { reg: '^#?设置(?:外号提醒|艾特提醒|自艾特提醒)\\s+.+$', fnc: 'setNotifyPreferenceForUser', permission: 'master' },
+                { reg: '^#?(?:设置)?(?:外号提醒|艾特提醒|自艾特提醒)(?:\\s+.*)?(?:开启|关闭|开|关)$', fnc: 'setNotifyPreference' },
                 { reg: '^#?(?:外号设置|设置外号|alias)(/(?:alias|外号))?(\\s+.*)?$', fnc: 'setAliasForUser' },
                 { reg: '^#?外号删除\\s*.+$', fnc: 'removeAlias' },
                 { reg: '^#?查看外号(?:\\s+.*)?$', fnc: 'viewAliases' },
@@ -980,9 +979,9 @@ export class noticePlugin extends plugin {
             '#查看外号 —— 查看自己设置的全部外号和提醒状态',
             '#查看外号 @用户 —— 查看指定用户设置的全部外号和提醒状态',
             '#外号删除 外号 —— 删除自己设置的外号',
-            '#外号提醒开启/关闭 —— 开关自己的外号提及提醒',
-            '#艾特提醒开启/关闭 —— 开关别人艾特或引用自己的提醒',
-            '#自艾特提醒开启/关闭 —— 开关自己艾特或引用自己的提醒',
+            '#外号提醒开启/关闭 或 #设置外号提醒开启/关闭 —— 开关自己的外号提及提醒',
+            '#艾特提醒开启/关闭 或 #设置艾特提醒开启/关闭 —— 开关别人艾特或引用自己的提醒',
+            '#自艾特提醒开启/关闭 或 #设置自艾特提醒开启/关闭 —— 开关自己艾特或引用自己的提醒',
             '',
             '【外号提醒】',
             '外号和艾特提醒默认关闭；关闭时仍会保存记录，但不会主动群内艾特或私聊提醒。',
@@ -990,9 +989,9 @@ export class noticePlugin extends plugin {
             '',
             '【主人专用】',
             '#外号设置/alias @用户 外号 —— 给指定用户设置外号',
-            '#设置外号提醒 @用户 开启/关闭 —— 设置指定用户的外号提醒',
-            '#设置艾特提醒 @用户 开启/关闭 —— 设置指定用户的艾特提醒',
-            '#设置自艾特提醒 @用户 开启/关闭 —— 设置指定用户的自艾特提醒',
+            '#设置外号提醒 @用户 开启/关闭 —— 主人设置指定用户的外号提醒',
+            '#设置艾特提醒 @用户 开启/关闭 —— 主人设置指定用户的艾特提醒',
+            '#设置自艾特提醒 @用户 开启/关闭 —— 主人设置指定用户的自艾特提醒',
             '#查看全部外号 —— 查看所有用户的外号和提醒状态，内容过多时分包合并发送',
             '#清除全部艾特数据 —— 清空所有群的艾特记录',
             '',
@@ -1008,45 +1007,33 @@ export class noticePlugin extends plugin {
     }
 
     async setNotifyPreference(e) {
-        const match = cleanAlias(e.msg || '').match(/^#?(外号提醒|艾特提醒|自艾特提醒)\s*(开启|关闭|开|关)$/i);
+        const commandText = cleanAlias(e.msg || '');
+        const match = commandText.match(/^#?(设置)?(外号提醒|艾特提醒|自艾特提醒)(?:\s+.*)?(开启|关闭|开|关)$/i);
         if (!match) return false;
 
-        const type = match[1];
-        const enabled = /^(开启|开)$/i.test(match[2]);
-        try {
-            updateNotifySetting(String(e.user_id), type, enabled);
-            await e.reply(`✅ ${type}已${enabled ? '开启' : '关闭'}。`, true);
-        } catch (err) {
-            logger.error(`提醒配置保存失败：${e.user_id}`, err);
-            await e.reply('提醒配置保存失败，请稍后再试~', true);
+        if (e.atBot) {
+            await e.reply('不能给机器人设置提醒开关哦~', true);
+            return true;
         }
-        return true;
-    }
 
-    async setNotifyPreferenceForUser(e) {
-        if (!e.isMaster) {
+        const hasTargetUser = Boolean(e.at && !e.atBot);
+        if (hasTargetUser && !e.isMaster) {
             await e.reply('暂无权限，只有主人才能设置其他用户的提醒开关', true);
             return true;
         }
 
-        const commandText = cleanAlias(e.msg || '');
-        const match = commandText.match(/^#?设置(外号提醒|艾特提醒|自艾特提醒)\s*(开启|关闭|开|关)$/i);
-        if (!match || !e.at || e.atBot) {
-            await e.reply('用法：#设置外号提醒 @用户 开启/关闭', true);
-            return true;
-        }
-
-        const targetUserId = String(e.at);
+        const type = match[2];
+        const enabled = /^(开启|开)$/i.test(match[3]);
+        const targetUserId = hasTargetUser ? String(e.at) : String(e.user_id);
         if (!/^\d+$/.test(targetUserId) || targetUserId === String(Bot.uin)) {
             await e.reply('目标用户 QQ 号无效，不能设置机器人本身~', true);
             return true;
         }
 
-        const type = match[1];
-        const enabled = /^(开启|开)$/i.test(match[2]);
         try {
             updateNotifySetting(targetUserId, type, enabled);
-            await e.reply(`✅ 已将 ${targetUserId} 的${type}${enabled ? '开启' : '关闭'}。`, true);
+            const subject = hasTargetUser ? `${targetUserId} 的` : '你的';
+            await e.reply(`✅ 已将${subject}${type}${enabled ? '开启' : '关闭'}。`, true);
         } catch (err) {
             logger.error(`提醒配置保存失败：${targetUserId}`, err);
             await e.reply('提醒配置保存失败，请稍后再试~', true);
