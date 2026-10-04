@@ -443,6 +443,11 @@ function getMessageImages(message) {
         .map(String);
 }
 
+function getActorDisplay(e) {
+    const name = e.sender?.card || e.sender?.nickname || e.nickname || String(e.user_id);
+    return `${name}（QQ：${String(e.user_id)}）`;
+}
+
 function sourceNameFallback(userId) {
     return userId || '引用消息';
 }
@@ -515,6 +520,7 @@ async function notifyMentionedUsers(e, targetQQs, directAtQQs, msgData) {
 
         const privateMessage = [
             `${actionText}「${source}」\n`,
+            `触发人：${getActorDisplay(e)}\n`,
             `消息：${msgData.message || '纯艾特'}`
         ];
         if (msgData.reply?.text) {
@@ -1244,6 +1250,7 @@ export class noticePlugin extends plugin {
 
             const privateMessage = [
                 `有人在群「${source}」里提到了你的外号：${user.aliases.join('、')}\n`,
+                `提及人：${getActorDisplay(e)}\n`,
                 `消息：${e.msg}`
             ];
             try {
