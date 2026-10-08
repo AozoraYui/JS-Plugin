@@ -296,6 +296,24 @@ function formatTime(timestamp) {
     return `${month}-${day} ${timeStr}`;
 }
 
+function formatDateTime(timestamp) {
+    const date = new Date(Number(timestamp) || Date.now());
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const hours = String(date.getHours()).padStart(2, '0');
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    const seconds = String(date.getSeconds()).padStart(2, '0');
+    return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function getReplyImageSegments(reply) {
+    return (Array.isArray(reply?.images) ? reply.images : [])
+        .map(getImageValue)
+        .filter(Boolean)
+        .map(image => segment.image(image));
+}
+
 function getCalledFilePath(userId) {
     return path.join(calledDataDir, `${String(userId)}.json`);
 }
@@ -518,19 +536,36 @@ async function notifyMentionedUsers(e, targetQQs, directAtQQs, msgData) {
         else if (isReplyTarget) actionText += '引用了你的消息';
         else actionText += '提到了你';
 
-        const privateMessage = [
+        const privateText = [
             `${actionText}「${source}」\n`,
             `触发人：${getActorDisplay(e)}\n`,
-            `消息：${msgData.message || '纯艾特'}`
+            `时间：${formatDateTime(msgData.timestamp)}\n`
         ];
         if (msgData.reply?.text) {
-            privateMessage.splice(1, 0, `引用内容：${msgData.reply.text}\n`);
+            privateText.push(`引用内容：${msgData.reply.text}\n`);
         }
+        const replyImages = getReplyImageSegments(msgData.reply);
+        const privateMessage = [
+            ...privateText,
+            ...(replyImages.length > 0 ? ['引用图片：', ...replyImages] : []),
+            `消息：${msgData.message || '纯艾特'}`
+        ];
 
         try {
             await Bot.pickUser(Number(normalizedTargetQQ)).sendMsg(privateMessage);
         } catch (err) {
             logger.warn(`艾特/引用私聊提醒发送失败：${normalizedTargetQQ}`, err);
+            if (replyImages.length > 0) {
+                try {
+                    await Bot.pickUser(Number(normalizedTargetQQ)).sendMsg([
+                        ...privateText,
+                        '引用图片发送失败，已保留文字内容。\n',
+                        `消息：${msgData.message || '纯艾特'}`
+                    ]);
+                } catch (fallbackErr) {
+                    logger.warn(`艾特/引用文字私聊提醒发送失败：${normalizedTargetQQ}`, fallbackErr);
+                }
+            }
         }
     }));
 }
@@ -1251,6 +1286,7 @@ export class noticePlugin extends plugin {
             const privateMessage = [
                 `有人在群「${source}」里提到了你的外号：${user.aliases.join('、')}\n`,
                 `提及人：${getActorDisplay(e)}\n`,
+                `时间：${formatDateTime(callRecord.timestamp)}\n`,
                 `消息：${e.msg}`
             ];
             try {
