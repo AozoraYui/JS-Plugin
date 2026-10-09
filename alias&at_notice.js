@@ -466,6 +466,10 @@ function getActorDisplay(e) {
     return `${name}（QQ：${String(e.user_id)}）`;
 }
 
+function canManageOtherUser(e) {
+    return Boolean(e.isMaster || e.member?.is_admin || e.member?.is_owner);
+}
+
 function sourceNameFallback(userId) {
     return userId || '引用消息';
 }
@@ -1029,7 +1033,7 @@ export class noticePlugin extends plugin {
             '提醒能否私聊成功取决于好友关系和平台权限。',
             '',
             '【主人专用】',
-            '#外号设置/alias @用户 外号 —— 给指定用户设置外号',
+            '#外号设置/alias @用户 外号 —— 主人或群管理员给指定用户设置外号',
             '#设置外号提醒 @用户 开启/关闭 —— 主人设置指定用户的外号提醒',
             '#设置艾特提醒 @用户 开启/关闭 —— 主人设置指定用户的艾特提醒',
             '#设置自艾特提醒 @用户 开启/关闭 —— 主人设置指定用户的自艾特提醒',
@@ -1102,8 +1106,8 @@ export class noticePlugin extends plugin {
         }
 
         if (hasTargetUser) {
-            if (!e.isMaster) {
-                await e.reply('暂无权限，只有主人才能给其他用户设置外号', true);
+            if (!canManageOtherUser(e)) {
+                await e.reply('暂无权限，只有主人或群管理员才能给其他用户设置外号', true);
                 return true;
             }
             targetUserId = String(e.at);
