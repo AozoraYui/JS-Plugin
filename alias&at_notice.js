@@ -1034,9 +1034,9 @@ export class noticePlugin extends plugin {
             '',
             '【主人专用】',
             '#外号设置/alias @用户 外号 —— 主人或群管理员给指定用户设置外号',
-            '#设置外号提醒 @用户 开启/关闭 —— 主人设置指定用户的外号提醒',
-            '#设置艾特提醒 @用户 开启/关闭 —— 主人设置指定用户的艾特提醒',
-            '#设置自艾特提醒 @用户 开启/关闭 —— 主人设置指定用户的自艾特提醒',
+            '#设置外号提醒 @用户 开启/关闭 —— 主人或群管理员设置指定用户的外号提醒',
+            '#设置艾特提醒 @用户 开启/关闭 —— 主人或群管理员设置指定用户的艾特提醒',
+            '#设置自艾特提醒 @用户 开启/关闭 —— 主人或群管理员设置指定用户的自艾特提醒',
             '#查看全部外号 —— 查看所有用户的外号和提醒状态，内容过多时分包合并发送',
             '#清除全部艾特数据 —— 清空所有群的艾特记录',
             '',
@@ -1062,8 +1062,8 @@ export class noticePlugin extends plugin {
         }
 
         const hasTargetUser = Boolean(e.at && !e.atBot);
-        if (hasTargetUser && !e.isMaster) {
-            await e.reply('暂无权限，只有主人才能设置其他用户的提醒开关', true);
+        if (hasTargetUser && !canManageOtherUser(e)) {
+            await e.reply('暂无权限，只有主人或群管理员才能设置其他用户的提醒开关', true);
             return true;
         }
 
