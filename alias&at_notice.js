@@ -42,7 +42,9 @@ const reservedAliasWords = new Set([
     '艾特提醒开启',
     '艾特提醒关闭',
     '自艾特提醒开启',
-    '自艾特提醒关闭'
+    '自艾特提醒关闭',
+    '自提醒开启',
+    '自提醒关闭'
 ]);
 
 if (!fs.existsSync(atDataDir)) {
@@ -144,7 +146,7 @@ function getNotifySettings(userId) {
         user_id: String(userId),
         alias_notify: false,
         mention_notify: false,
-        self_mention_notify: false
+        self_notify: false
     };
     const filePath = getNotifyFilePath(userId);
     if (!fs.existsSync(filePath)) return defaults;
@@ -155,7 +157,7 @@ function getNotifySettings(userId) {
             ...defaults,
             alias_notify: data?.alias_notify === true,
             mention_notify: data?.mention_notify === true,
-            self_mention_notify: data?.self_mention_notify === true
+            self_notify: data?.self_notify === true || data?.self_mention_notify === true
         };
     } catch (err) {
         logger.error(`提醒配置读取失败：${filePath}`, err);
@@ -170,7 +172,7 @@ function writeNotifySettings(userId, settings) {
         user_id: String(userId),
         alias_notify: settings.alias_notify === true,
         mention_notify: settings.mention_notify === true,
-        self_mention_notify: settings.self_mention_notify === true,
+        self_notify: settings.self_notify === true,
         updated_at: Date.now()
     };
 
@@ -182,7 +184,8 @@ function getNotifySettingKey(type) {
     return {
         '外号提醒': 'alias_notify',
         '艾特提醒': 'mention_notify',
-        '自艾特提醒': 'self_mention_notify'
+        '自艾特提醒': 'self_notify',
+        '自提醒': 'self_notify'
     }[type];
 }
 
@@ -201,7 +204,7 @@ function formatNotifyStatus(settings) {
     return [
         `外号提醒：${status(settings.alias_notify)}`,
         `艾特提醒：${status(settings.mention_notify)}`,
-        `自艾特提醒：${status(settings.self_mention_notify)}`
+        `自提醒：${status(settings.self_notify)}`
     ];
 }
 
@@ -245,7 +248,7 @@ function validateAlias(alias) {
 }
 
 function isAliasCommand(text) {
-    return /^#?(外号设置|外号删除|我的外号|查看外号|查看全部外号|设置外号|alias|外号帮助|外号提醒(?:\s*(?:开启|关闭|开|关))?|艾特提醒(?:\s*(?:开启|关闭|开|关))?|自艾特提醒(?:\s*(?:开启|关闭|开|关))?|设置(?:外号提醒|艾特提醒|自艾特提醒)(?:\s+.*)?|谁叫(我|他|她|它)了|谁(艾特|@|at)(我|他|她|它)|(哪个逼|哪个扑街仔|哪个铺盖仔|哪个扑街|哪个铺盖|哪个屌毛|哪个叼毛)(艾特|@|at)我)/i.test(cleanAlias(text));
+    return /^#?(外号设置|外号删除|我的外号|查看外号|查看全部外号|设置外号|alias|外号帮助|外号提醒(?:\s*(?:开启|关闭|开|关))?|艾特提醒(?:\s*(?:开启|关闭|开|关))?|(?:自提醒|自艾特提醒)(?:\s*(?:开启|关闭|开|关))?|设置(?:外号提醒|艾特提醒|自提醒|自艾特提醒)(?:\s+.*)?|谁叫(我|他|她|它)了|谁(艾特|@|at)(我|他|她|它)|(哪个逼|哪个扑街仔|哪个铺盖仔|哪个扑街|哪个铺盖|哪个屌毛|哪个叼毛)(艾特|@|at)我)/i.test(cleanAlias(text));
 }
 
 function saveAliasForUser(userId, alias) {
@@ -470,6 +473,16 @@ function canManageOtherUser(e) {
     return Boolean(e.isMaster || e.member?.is_admin || e.member?.is_owner);
 }
 
+function isBotMessage(e) {
+    const botId = String(Bot.uin);
+    return [
+        e.user_id,
+        e.sender?.user_id,
+        e.sender?.uin,
+        e.sender?.id
+    ].some(userId => userId !== undefined && String(userId) === botId);
+}
+
 function sourceNameFallback(userId) {
     return userId || '引用消息';
 }
@@ -528,7 +541,7 @@ async function notifyMentionedUsers(e, targetQQs, directAtQQs, msgData) {
         const isSelfTarget = normalizedTargetQQ === String(e.user_id);
         const settings = getNotifySettings(normalizedTargetQQ);
         const notifyEnabled = isSelfTarget
-            ? settings.self_mention_notify
+            ? settings.self_notify
             : settings.mention_notify;
         if (!notifyEnabled) return;
 
@@ -649,7 +662,7 @@ export class noticePlugin extends plugin {
             priority: -114514, 
             rule: [
                 { reg: '^#?(alias/外号帮助|外号帮助|alias帮助)$', fnc: 'aliasHelp' },
-                { reg: '^#?(?:设置)?(?:外号提醒|艾特提醒|自艾特提醒)(?:\\s+.*)?(?:开启|关闭|开|关)$', fnc: 'setNotifyPreference' },
+                { reg: '^#?(?:设置)?(?:外号提醒|艾特提醒|自提醒|自艾特提醒)(?:\\s+.*)?(?:开启|关闭|开|关)$', fnc: 'setNotifyPreference' },
                 { reg: '^#?(?:外号设置|设置外号|alias)(/(?:alias|外号))?(\\s+.*)?$', fnc: 'setAliasForUser' },
                 { reg: '^#?外号删除\\s*.+$', fnc: 'removeAlias' },
                 { reg: '^#?查看外号(?:\\s+.*)?$', fnc: 'viewAliases' },
@@ -667,6 +680,8 @@ export class noticePlugin extends plugin {
     // 【模块一：监听所有的 @ 消息（稳定版逻辑）】
     // =========================================================
     async accept(e) {
+        if (isBotMessage(e)) return false;
+
         const isPluginCommand = e.isGroup && e.msg && isAliasCommand(e.msg);
         if (e.isGroup && e.msg && !isPluginCommand) {
             await this.aliasNotice(e);
@@ -1026,7 +1041,8 @@ export class noticePlugin extends plugin {
             '#外号删除 外号 —— 删除自己设置的外号',
             '#外号提醒开启/关闭 或 #设置外号提醒开启/关闭 —— 开关自己的外号提及提醒',
             '#艾特提醒开启/关闭 或 #设置艾特提醒开启/关闭 —— 开关别人艾特或引用自己的提醒',
-            '#自艾特提醒开启/关闭 或 #设置自艾特提醒开启/关闭 —— 开关自己艾特或引用自己的提醒',
+            '#自提醒开启/关闭 或 #设置自提醒开启/关闭 —— 开关自己触发的外号、艾特和引用提醒',
+            '#自艾特提醒开启/关闭 —— 旧命令，兼容使用',
             '',
             '【外号提醒】',
             '外号和艾特提醒默认关闭；关闭时仍会保存记录，但不会主动群内艾特或私聊提醒。',
@@ -1036,7 +1052,8 @@ export class noticePlugin extends plugin {
             '#外号设置/alias @用户 外号 —— 主人或群管理员给指定用户设置外号',
             '#设置外号提醒 @用户 开启/关闭 —— 主人或群管理员设置指定用户的外号提醒',
             '#设置艾特提醒 @用户 开启/关闭 —— 主人或群管理员设置指定用户的艾特提醒',
-            '#设置自艾特提醒 @用户 开启/关闭 —— 主人或群管理员设置指定用户的自艾特提醒',
+            '#设置自提醒 @用户 开启/关闭 —— 主人或群管理员设置指定用户的自提醒',
+            '#设置自艾特提醒 @用户 开启/关闭 —— 旧命令，兼容使用',
             '#查看全部外号 —— 查看所有用户的外号和提醒状态，内容过多时分包合并发送',
             '#清除全部艾特数据 —— 清空所有群的艾特记录',
             '',
@@ -1053,7 +1070,7 @@ export class noticePlugin extends plugin {
 
     async setNotifyPreference(e) {
         const commandText = cleanAlias(e.msg || '');
-        const match = commandText.match(/^#?(设置)?(外号提醒|艾特提醒|自艾特提醒)(?:\s+.*)?(开启|关闭|开|关)$/i);
+        const match = commandText.match(/^#?(设置)?(外号提醒|艾特提醒|自提醒|自艾特提醒)(?:\s+.*)?(开启|关闭|开|关)$/i);
         if (!match) return false;
 
         if (e.atBot) {
@@ -1261,9 +1278,11 @@ export class noticePlugin extends plugin {
             }
         }
 
-        const enabledUsers = matchedUsers.filter(user =>
-            getNotifySettings(user.userId).alias_notify
-        );
+        const enabledUsers = matchedUsers.filter(user => {
+            const settings = getNotifySettings(user.userId);
+            const isSelfTarget = String(user.userId) === String(e.user_id);
+            return isSelfTarget ? settings.self_notify : settings.alias_notify;
+        });
         const standaloneUsers = enabledUsers.filter(user =>
             user.aliases.some(alias => messageText === cleanAlias(alias))
         );
