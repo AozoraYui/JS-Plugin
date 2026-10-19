@@ -20,6 +20,8 @@ const getNotifyFilePath = userId => path.join(notifyDataDir, `${String(userId)}.
 const aliasMaxLength = 32;
 const forwardUserLimit = 20;
 const forwardCharLimit = 5000;
+const recordPageSize = 16;
+const recordQueryLimit = 64;
 const reservedAliasWords = new Set([
     '外号设置',
     '设置外号',
@@ -248,7 +250,7 @@ function validateAlias(alias) {
 }
 
 function isAliasCommand(text) {
-    return /^#?(外号设置|外号删除|我的外号|查看外号|查看全部外号|设置外号|alias|外号帮助|外号提醒(?:\s*(?:开启|关闭|开|关))?|艾特提醒(?:\s*(?:开启|关闭|开|关))?|(?:自提醒|自艾特提醒)(?:\s*(?:开启|关闭|开|关))?|设置(?:外号提醒|艾特提醒|自提醒|自艾特提醒)(?:\s+.*)?|谁叫(我|他|她|它)了|谁(艾特|@|at)(我|他|她|它)|(哪个逼|哪个扑街仔|哪个铺盖仔|哪个扑街|哪个铺盖|哪个屌毛|哪个叼毛)(艾特|@|at)我)/i.test(cleanAlias(text));
+    return /^#?(外号设置|外号删除|我的外号|查看外号|查看全部外号|设置外号|alias|外号帮助|外号提醒(?:\s*(?:开启|关闭|开|关))?|艾特提醒(?:\s*(?:开启|关闭|开|关))?|(?:自提醒|自艾特提醒)(?:\s*(?:开启|关闭|开|关))?|设置(?:外号提醒|艾特提醒|自提醒|自艾特提醒)(?:\s+.*)?|(?:全部)?谁叫(我|他|她|它)了(?:\s+\d+)?|(?:全部)?谁(艾特|@|at)(我|他|她|它)(?:\s+\d+)?|(?:全部)?(哪个逼|哪个扑街仔|哪个铺盖仔|哪个扑街|哪个铺盖|哪个屌毛|哪个叼毛)(艾特|@|at)我(?:\s+\d+)?)/i.test(cleanAlias(text));
 }
 
 function saveAliasForUser(userId, alias) {
@@ -308,6 +310,25 @@ function formatDateTime(timestamp) {
     const minutes = String(date.getMinutes()).padStart(2, '0');
     const seconds = String(date.getSeconds()).padStart(2, '0');
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function getTodayStart() {
+    const date = new Date();
+    date.setHours(0, 0, 0, 0);
+    return date.getTime();
+}
+
+function parseQueryPage(value) {
+    const page = Number.parseInt(value, 10);
+    return Number.isInteger(page) && page > 0 ? page : 1;
+}
+
+function filterRecordsByScope(records, showAll) {
+    const todayStart = getTodayStart();
+    return records.filter(record => {
+        const timestamp = Number(record?.timestamp);
+        return Number.isFinite(timestamp) && (showAll || timestamp >= todayStart);
+    });
 }
 
 function getReplyImageSegments(reply) {
@@ -529,65 +550,102 @@ async function getReplySnapshot(e) {
     };
 }
 
-async function notifyMentionedUsers(e, targetQQs, directAtQQs, msgData) {
+async function notifyMentionedUsers(e, targetQQs, directAtQQs, msgData, aliasMatches = []) {
     const source = e.group_name ? `${e.group_name}(${e.group_id})` : String(e.group_id);
     const directTargets = new Set(directAtQQs.map(String));
     const replyTarget = String(msgData.reply?.userId || '');
+    const recipients = new Map();
 
-    await Promise.allSettled(targetQQs.map(async targetQQ => {
-        const normalizedTargetQQ = String(targetQQ);
-        if (!/^\d+$/.test(normalizedTargetQQ) || normalizedTargetQQ === String(Bot.uin)) return;
+    const addRecipient = rawQQ => {
+        const targetQQ = String(rawQQ ?? '').trim();
+        if (!/^\d+$/.test(targetQQ) || targetQQ === String(Bot.uin)) return null;
+        if (!recipients.has(targetQQ)) {
+            recipients.set(targetQQ, {
+                targetQQ,
+                aliases: [],
+                directAt: false,
+                reply: false
+            });
+        }
+        return recipients.get(targetQQ);
+    };
 
-        const isSelfTarget = normalizedTargetQQ === String(e.user_id);
-        const settings = getNotifySettings(normalizedTargetQQ);
-        const notifyEnabled = isSelfTarget
-            ? settings.self_notify
-            : settings.mention_notify;
-        if (!notifyEnabled) return;
+    for (const entry of aliasMatches) {
+        const recipient = addRecipient(entry.userId);
+        if (!recipient) continue;
+        recipient.aliases.push(...(Array.isArray(entry.aliases) ? entry.aliases : []));
+    }
+    for (const rawQQ of targetQQs) {
+        const recipient = addRecipient(rawQQ);
+        if (!recipient) continue;
+        if (directTargets.has(recipient.targetQQ)) recipient.directAt = true;
+        if (replyTarget === recipient.targetQQ) recipient.reply = true;
+    }
 
-        const isDirectAt = directTargets.has(normalizedTargetQQ);
-        const isReplyTarget = replyTarget === normalizedTargetQQ;
-        let actionText = '有人在群';
-        if (isDirectAt && isReplyTarget) actionText += '艾特并引用了你的消息';
-        else if (isDirectAt) actionText += '艾特了你';
-        else if (isReplyTarget) actionText += '引用了你的消息';
-        else actionText += '提到了你';
+    await Promise.allSettled([...recipients.values()].map(async recipient => {
+        const { targetQQ } = recipient;
+        const isSelfTarget = targetQQ === String(e.user_id);
+        const settings = getNotifySettings(targetQQ);
+        const selfNotifyEnabled = settings.self_notify;
+        const aliasNotifyEnabled = isSelfTarget ? selfNotifyEnabled : settings.alias_notify;
+        const mentionNotifyEnabled = isSelfTarget ? selfNotifyEnabled : settings.mention_notify;
+        const aliases = [...new Set(recipient.aliases.map(cleanAlias).filter(Boolean))];
+        const hasMention = recipient.directAt || recipient.reply;
+        const reasons = [];
 
+        if (hasMention && mentionNotifyEnabled) {
+            if (recipient.directAt && recipient.reply) reasons.push('艾特并引用了你的消息');
+            else if (recipient.directAt) reasons.push('艾特了你');
+            else reasons.push('引用了你的消息');
+        }
+        if (aliases.length > 0 && aliasNotifyEnabled) {
+            reasons.push(`提到了你的外号「${aliases.join('、')}」`);
+        }
+        if (reasons.length === 0) return;
+
+        const actionText = reasons.length === 1
+            ? `有人在群「${source}」${reasons[0]}`
+            : `有人在群「${source}」${reasons.slice(0, -1).join('，')}，并${reasons.at(-1)}`;
         const privateText = [
-            `${actionText}「${source}」\n`,
+            `${actionText}\n`,
             `触发人：${getActorDisplay(e)}\n`,
             `时间：${formatDateTime(msgData.timestamp)}\n`
         ];
-        if (msgData.reply?.text) {
+        if (hasMention && mentionNotifyEnabled && msgData.reply?.text) {
             privateText.push(`引用内容：${msgData.reply.text}\n`);
         }
-        const replyImages = getReplyImageSegments(msgData.reply);
+        const replyImages = hasMention && mentionNotifyEnabled
+            ? getReplyImageSegments(msgData.reply)
+            : [];
+        const messageText = msgData.message ||
+            cleanAlias(e.msg || '').replace(/\[CQ:[^\]]+\]/gi, '').trim() ||
+            '纯艾特';
         const privateMessage = [
             ...privateText,
             ...(replyImages.length > 0 ? ['引用图片：', ...replyImages] : []),
-            `消息：${msgData.message || '纯艾特'}`
+            `消息：${messageText}`
         ];
 
         try {
-            await Bot.pickUser(Number(normalizedTargetQQ)).sendMsg(privateMessage);
+            await Bot.pickUser(Number(targetQQ)).sendMsg(privateMessage);
         } catch (err) {
-            logger.warn(`艾特/引用私聊提醒发送失败：${normalizedTargetQQ}`, err);
+            logger.warn(`合并私聊提醒发送失败：${targetQQ}`, err);
             if (replyImages.length > 0) {
                 try {
-                    await Bot.pickUser(Number(normalizedTargetQQ)).sendMsg([
+                    await Bot.pickUser(Number(targetQQ)).sendMsg([
                         ...privateText,
                         '引用图片发送失败，已保留文字内容。\n',
-                        `消息：${msgData.message || '纯艾特'}`
+                        `消息：${messageText}`
                     ]);
                 } catch (fallbackErr) {
-                    logger.warn(`艾特/引用文字私聊提醒发送失败：${normalizedTargetQQ}`, fallbackErr);
+                    logger.warn(`合并私聊提醒文字重试失败：${targetQQ}`, fallbackErr);
                 }
             }
         }
     }));
 }
 
-function buildAliasCalledHtml(records, pageNumber, totalPages, totalRecords, targetLabel = '') {
+function buildAliasCalledHtml(records, pageNumber, totalPages, totalRecords, targetLabel = '', scopeText = '', batchText = '') {
     const msgHtml = records.map(record => {
         const callerId = String(record.caller_id || '').replace(/[^0-9]/g, '') || '0';
         const callerName = escapeHtml(record.caller_name || callerId);
@@ -634,6 +692,7 @@ body { font-family: 'PingFang SC', sans-serif; background: var(--bg-gradient); m
 .msg-time { font-size: 12px; color: #9ca3af; }
 .source { font-size: 12px; color: #9ca3af; margin-bottom: 5px; }
 .bubble { background: #fff; padding: 10px 13px; border-radius: 0 13px 13px 13px; font-size: 14px; line-height: 1.45; box-shadow: 0 2px 8px rgba(0,0,0,0.04); border: 1px solid #f3f4f6; word-break: break-word; }
+.batch-hint { margin-top: 6px; font-size: 12px; color: var(--theme-color); }
 .footer { margin-top: 24px; text-align: center; color: #cbd5e1; font-size: 12px; }
 </style>
 </head>
@@ -643,7 +702,8 @@ body { font-family: 'PingFang SC', sans-serif; background: var(--bg-gradient); m
         <div class="header-icon">📣</div>
         <div class="header-info">
             <h2>${title} ${pageText}</h2>
-            <p>当前群共 <strong>${totalRecords}</strong> 条历史呼叫记录</p>
+            <p>${scopeText || '当前群记录中'}共 <strong>${totalRecords}</strong> 条外号呼叫记录</p>
+            ${batchText ? `<p class="batch-hint">${escapeHtml(batchText)}</p>` : ''}
         </div>
     </div>
     <div class="msg-list">${msgHtml}</div>
@@ -668,8 +728,8 @@ export class noticePlugin extends plugin {
                 { reg: '^#?查看外号(?:\\s+.*)?$', fnc: 'viewAliases' },
                 { reg: '^#?我的外号$', fnc: 'viewAliases' },
                 { reg: '^#?查看全部外号$', fnc: 'allAliases', permission: 'master' },
-                { reg: '^#?谁叫(我|他|她|它)了$', fnc: 'whoCalledMe' },
-                { reg: '^(谁(艾特|@|at)(我|他|她|它)|(哪个逼|哪个扑街仔|哪个铺盖仔|哪个扑街|哪个铺盖|哪个屌毛|哪个叼毛)(艾特|@|at)我)$', fnc: 'whoAtme' },
+                { reg: '^#?(?:全部)?谁叫(我|他|她|它)了(?:\\s+\\d+)?$', fnc: 'whoCalledMe' },
+                { reg: '^#?(?:全部)?(?:谁(艾特|@|at)(我|他|她|它)|(哪个逼|哪个扑街仔|哪个铺盖仔|哪个扑街|哪个铺盖|哪个屌毛|哪个叼毛)(艾特|@|at)我)(?:\\s+\\d+)?$', fnc: 'whoAtme' },
                 { reg: '^(/clear_at|清除(艾特|at)数据)$', fnc: 'clearAt' },
                 { reg: '^(/clear_all|清除全部(艾特|at)数据)$', fnc: 'clearAll', permission: 'master' }
             ]
@@ -683,8 +743,9 @@ export class noticePlugin extends plugin {
         if (isBotMessage(e)) return false;
 
         const isPluginCommand = e.isGroup && e.msg && isAliasCommand(e.msg);
+        let aliasMatches = [];
         if (e.isGroup && e.msg && !isPluginCommand) {
-            await this.aliasNotice(e);
+            aliasMatches = await this.aliasNotice(e);
         }
         if (isPluginCommand || !e.isGroup || !e.message) return false;
 
@@ -742,7 +803,7 @@ export class noticePlugin extends plugin {
             .filter(targetQQ => /^\d+$/.test(targetQQ) && targetQQ !== String(Bot.uin));
 
         // 记录真实的数字 QQ 艾特、@全体，或被引用消息的作者。
-        if (!AtQQ.length && !hasAtAll) return false;
+        if (!AtQQ.length && !hasAtAll && aliasMatches.length === 0) return false;
 
         imgUrls = await Promise.all(imgUrls.filter(Boolean).map(cacheImageUrl));
 
@@ -762,6 +823,11 @@ export class noticePlugin extends plugin {
             hasVoice, hasVideo, hasCard 
         };
 
+        if (!AtQQ.length && !hasAtAll) {
+            await notifyMentionedUsers(e, [], [], msgData, aliasMatches);
+            return false;
+        }
+
         const filePath = path.join(atDataDir, `${e.group_id}.json`);
         let groupData = {};
         if (fs.existsSync(filePath)) {
@@ -779,8 +845,8 @@ export class noticePlugin extends plugin {
         }
         fs.writeFileSync(filePath, JSON.stringify(groupData, null, 2), 'utf8');
 
-        if (AtQQ.length > 0) {
-            await notifyMentionedUsers(e, AtQQ, directAtQQs, msgData);
+        if (AtQQ.length > 0 || aliasMatches.length > 0) {
+            await notifyMentionedUsers(e, AtQQ, directAtQQs, msgData, aliasMatches);
         }
         return false; 
     }
@@ -796,14 +862,16 @@ export class noticePlugin extends plugin {
         }
 
         const commandText = cleanAlias(e.msg || '');
-        const commandMatch = commandText.match(/^#?谁叫(我|他|她|它)了/i);
-        const targetPronoun = commandMatch?.[1] || '我';
+        const commandMatch = commandText.match(/^#?(全部)?谁叫(我|他|她|它)了(?:\s+(\d+))?$/i);
+        const showAll = Boolean(commandMatch?.[1]);
+        const targetPronoun = commandMatch?.[2] || '我';
+        const queryPage = parseQueryPage(commandMatch?.[3]);
         const isSelf = targetPronoun === '我';
         let targetUserId = String(e.user_id);
 
         if (!isSelf) {
             if (!e.at || e.atBot) {
-                await e.reply(`用法：谁叫${targetPronoun}了 @用户`, true);
+                await e.reply(`用法：${showAll ? '全部' : ''}谁叫${targetPronoun}了 @用户${showAll ? ' [页码]' : ''}`, true);
                 return true;
             }
             targetUserId = String(e.at);
@@ -815,25 +883,40 @@ export class noticePlugin extends plugin {
             targetName = member?.card || member?.nickname || targetUserId;
         }
 
-        const records = readCalledRecords(targetUserId)
+        const allRecords = filterRecordsByScope(readCalledRecords(targetUserId), showAll)
             .filter(record => String(record.group_id) === String(e.group_id))
             .sort((left, right) => (right.timestamp || 0) - (left.timestamp || 0));
+        const scopeLabel = showAll ? '全部' : '当天';
+        const scopeText = showAll ? '当前群全部记录中' : '当前群今天的记录中';
 
-        if (records.length === 0) {
+        if (allRecords.length === 0) {
+            const scopeName = showAll ? '目前' : '今天';
             await e.reply(
                 isSelf
-                    ? '目前没有人在本群呼叫过你的外号哦~'
-                    : `目前没有人在本群呼叫过${targetName}的外号哦~`,
+                    ? `${scopeName}没有人在本群呼叫过你的外号哦~`
+                    : `${scopeName}没有人在本群呼叫过${targetName}的外号哦~`,
                 true
             );
             return true;
         }
 
-        const pageSize = 16;
+        const totalRecords = allRecords.length;
+        const totalQueryPages = Math.ceil(totalRecords / recordQueryLimit);
+        if (queryPage > totalQueryPages) {
+            await e.reply(`本群${scopeLabel}记录只有 ${totalQueryPages} 批，请输入不超过 ${totalQueryPages} 的页码哦~`, true);
+            return true;
+        }
+
+        const batchStart = (queryPage - 1) * recordQueryLimit;
+        const records = allRecords.slice(batchStart, batchStart + recordQueryLimit);
+        const pageSize = recordPageSize;
         const totalPages = Math.ceil(records.length / pageSize);
         const imageMessages = [];
         const renderId = `${e.group_id}_${targetUserId}_${Date.now()}`;
-        const targetLabel = isSelf ? '我的' : `${targetName}的`;
+        const targetLabel = `${isSelf ? '我的' : `${targetName}的`}${scopeLabel}`;
+        const batchText = totalRecords > recordQueryLimit
+            ? `本次显示第 ${queryPage}/${totalQueryPages} 批，每批最多 ${recordQueryLimit} 条`
+            : '';
 
         for (let index = 0; index < records.length; index += pageSize) {
             const pageNumber = Math.floor(index / pageSize) + 1;
@@ -846,8 +929,10 @@ export class noticePlugin extends plugin {
                 pageRecords,
                 pageNumber,
                 totalPages,
-                records.length,
-                targetLabel
+                totalRecords,
+                targetLabel,
+                scopeText,
+                batchText
             );
 
             fs.writeFileSync(htmlPath, htmlString, 'utf8');
@@ -875,7 +960,7 @@ export class noticePlugin extends plugin {
         const forwardMsg = await common.makeForwardMsg(
             e,
             imageMessages,
-            `📣 本群外号呼叫记录（共 ${imageMessages.length} 页）`
+            `📣 本群${scopeLabel}外号呼叫记录（${queryPage}/${totalQueryPages} 批，共 ${imageMessages.length} 页）`
         );
         await e.reply(forwardMsg);
         return true;
@@ -887,23 +972,24 @@ export class noticePlugin extends plugin {
             return true;
         }
 
-        // --- 逻辑修复：精准判定查询目标 ---
-        let targetQQ = String(e.user_id); // 默认查询发送指令的人
-        
-        // 只有当消息里明确不包含“我”，且确实艾特了某人时，才去查别人的
-        // 我们用更稳妥的正则来匹配“我”字
-        let isSearchSelf = /我/.test(e.msg);
+        const commandText = cleanAlias(e.msg || '');
+        const commandMatch = commandText.match(/^#?(全部)?(?:谁(?:艾特|@|at)(我|他|她|它)|(?:哪个逼|哪个扑街仔|哪个铺盖仔|哪个扑街|哪个铺盖|哪个屌毛|哪个叼毛)(?:艾特|@|at)我)(?:\s+(\d+))?$/i);
+        const showAll = Boolean(commandMatch?.[1]);
+        const targetPronoun = commandMatch?.[2] || '我';
+        const queryPage = parseQueryPage(commandMatch?.[3]);
+        let targetQQ = String(e.user_id);
 
-        if (!isSearchSelf && e.at) {
-            targetQQ = String(e.atBot ? Bot.uin : e.at);
-        } else {
-            // 如果是查自己，强制把 targetQQ 锁死为当前发送者
-            targetQQ = String(e.user_id);
+        if (targetPronoun !== '我') {
+            if (!e.at || e.atBot) {
+                await e.reply(`用法：${showAll ? '全部' : ''}谁艾特${targetPronoun} @用户${showAll ? ' [页码]' : ''}`, true);
+                return true;
+            }
+            targetQQ = String(e.at);
         }
 
         const filePath = path.join(atDataDir, `${e.group_id}.json`);
         if (!fs.existsSync(filePath)) {
-            await e.reply('目前本群还没有真正的 @ 记录哦~\n如果要查看别人呼叫你外号的记录，请使用“谁叫我了”。', true);
+            await e.reply(`${showAll ? '目前' : '今天'}本群还没有真正的 @ 记录哦~\n如果要查看别人呼叫你外号的记录，请使用“谁叫我了”。`, true);
             return true;
         }
 
@@ -914,41 +1000,54 @@ export class noticePlugin extends plugin {
             return true;
         }
 
-        // 获取全部历史数据
-        let personal = groupData[targetQQ] || [];
-        let everyone = groupData['all'] || [];
-        let combinedData = [...personal, ...everyone];
-        const imagesChanged = await cacheRecordImages(combinedData);
-        if (imagesChanged) {
-            fs.writeFileSync(filePath, JSON.stringify(groupData, null, 2), 'utf8');
-        }
+        const scopeLabel = showAll ? '全部' : '当天';
+        const scopeText = showAll ? '当前群全部记录中' : '当前群今天的记录中';
+        const personal = groupData[targetQQ] || [];
+        const everyone = groupData['all'] || [];
+        const combinedData = filterRecordsByScope([...personal, ...everyone], showAll);
 
         if (combinedData.length === 0) {
             let name = (targetQQ === String(e.user_id)) ? '你' : 'TA';
-            await e.reply(`目前没有人艾特过${name}哦~\n如果要查看外号呼叫记录，请使用“谁叫我了”。`, true);
+            await e.reply(`${showAll ? '目前' : '今天'}没有人艾特过${name}哦~\n如果要查看外号呼叫记录，请使用“谁叫我了”。`, true);
             return true;
         }
 
         // 排序：从新到旧
         combinedData.sort((a, b) => b.timestamp - a.timestamp);
-        const pageSize = 16;
-        const totalPages = Math.ceil(combinedData.length / pageSize);
+        const totalRecords = combinedData.length;
+        const totalQueryPages = Math.ceil(totalRecords / recordQueryLimit);
+        if (queryPage > totalQueryPages) {
+            await e.reply(`本群${scopeLabel}艾特记录只有 ${totalQueryPages} 批，请输入不超过 ${totalQueryPages} 的页码哦~`, true);
+            return true;
+        }
+
+        const batchStart = (queryPage - 1) * recordQueryLimit;
+        const pageRecords = combinedData.slice(batchStart, batchStart + recordQueryLimit);
+        const imagesChanged = await cacheRecordImages(pageRecords);
+        if (imagesChanged) {
+            fs.writeFileSync(filePath, JSON.stringify(groupData, null, 2), 'utf8');
+        }
+        const pageSize = recordPageSize;
+        const totalPages = Math.ceil(pageRecords.length / pageSize);
         const imageMessages = [];
         const renderId = `${e.group_id}_${targetQQ}_${Date.now()}`;
+        const batchText = totalRecords > recordQueryLimit
+            ? `本次显示第 ${queryPage}/${totalQueryPages} 批，每批最多 ${recordQueryLimit} 条`
+            : '';
 
         // 渲染名字：如果是查自己就显示“我”，查别人就显示对方的名字
         let targetName = '我';
         if (targetQQ !== String(e.user_id)) {
-            let member = e.group.pickMember(targetQQ);
+            const member = e.group?.pickMember?.(targetQQ);
             targetName = member?.card || member?.nickname || targetQQ;
         }
 
-        for (let pageStart = 0; pageStart < combinedData.length; pageStart += pageSize) {
+        for (let pageStart = 0; pageStart < pageRecords.length; pageStart += pageSize) {
             const pageNumber = Math.floor(pageStart / pageSize) + 1;
-            const pageRecords = combinedData.slice(pageStart, pageStart + pageSize);
+            const currentPageRecords = pageRecords.slice(pageStart, pageStart + pageSize);
 
             // --- 渲染 HTML (保持你修改后的背景和样式) ---
-            let msgHtml = pageRecords.map(item => {
+            let msgHtml = currentPageRecords.map(item => {
             const replyData = item.reply && typeof item.reply === 'object' ? item.reply : null;
             let replyHtml = '';
             if (replyData) {
@@ -991,7 +1090,7 @@ export class noticePlugin extends plugin {
 
         // 这一段 htmlString 建议保留你已经在用的、带背景图的那个版本
         // 只需要确保里面的 ${targetQQ} 和 ${targetName} 变量正确即可
-        let htmlString = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><style>:root { --theme-color: #7b8cf6; --bg-gradient: linear-gradient(135deg, #eef2fb 0%, #e0e7ff 100%); } body { font-family: 'PingFang SC', sans-serif; background: var(--bg-gradient); margin: 0; padding: 40px; width: 650px; } .container { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(112, 128, 176, 0.15); border: 1px solid white; } .header { display: flex; align-items: center; padding-bottom: 25px; margin-bottom: 25px; border-bottom: 2px dashed #e5e7eb; } .header img { width: 68px; height: 68px; border-radius: 50%; margin-right: 18px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); } .header-info h2 { margin: 0 0 6px 0; font-size: 24px; color: #1f2937; } .group-tag { font-size: 12px; background: var(--theme-color); color: white; padding: 3px 8px; border-radius: 6px; } .header-info p { margin: 0; font-size: 15px; color: #6b7280; } .header-info strong { color: var(--theme-color); } .msg-list { display: flex; flex-direction: column; gap: 28px; } .msg-item { display: flex; gap: 16px; } .avatar { width: 46px; height: 46px; border-radius: 12px; object-fit: cover; } .msg-content { flex: 1; max-width: calc(100% - 62px); } .sender-info { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; } .sender-name { font-weight: 600; font-size: 15px; color: #374151; } .msg-time { font-size: 12px; color: #9ca3af; } .bubble { background: white; padding: 14px 18px; border-radius: 0 16px 16px 16px; font-size: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); border: 1px solid #f3f4f6; display: inline-block; max-width: 100%; } .reply-box { background: #f8fafc; border-left: 3px solid #94a3b8; padding: 6px 12px; border-radius: 4px 8px 8px 4px; font-size: 13px; color: #64748b; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; } .reply-preview { background: #f8fafc; border-left: 3px solid #94a3b8; padding: 8px 10px; border-radius: 4px 8px 8px 4px; margin-bottom: 8px; color: #64748b; } .reply-preview-header { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #475569; margin-bottom: 5px; } .reply-preview-avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; } .reply-preview-label { color: #94a3b8; font-size: 11px; } .reply-preview-text { font-size: 13px; line-height: 1.45; white-space: normal; word-break: break-word; } .reply-preview-image { max-width: 180px; max-height: 100px; border-radius: 6px; object-fit: cover; margin-top: 6px; display: block; } .empty-at { color: #9ca3af; font-style: italic; } .media-hint { color: var(--theme-color); font-size: 14px; margin-top: 8px; background: #f0f5ff; padding: 6px 12px; border-radius: 8px; } .msg-img { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; } .footer { margin-top: 35px; text-align: center; color: #cbd5e1; font-size: 12px; }</style></head><body><div class="container"><div class="header"><img src="https://q1.qlogo.cn/g?b=qq&nk=${targetQQ}&s=100"><div class="header-info"><h2>艾特数据报告 <span class="group-tag">${e.group_name || '本群'}</span></h2><p>历史记录中，<strong>${targetName}</strong> 共有 <strong>${combinedData.length}</strong> 条呼叫记录</p></div></div><div class="msg-list">${msgHtml}</div><div class="footer">Generated by 提醒助手 • ${new Date().toLocaleString()}</div></div></body></html>`;
+        let htmlString = `<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><style>:root { --theme-color: #7b8cf6; --bg-gradient: linear-gradient(135deg, #eef2fb 0%, #e0e7ff 100%); } body { font-family: 'PingFang SC', sans-serif; background: var(--bg-gradient); margin: 0; padding: 40px; width: 650px; } .container { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border-radius: 20px; padding: 30px; box-shadow: 0 10px 30px rgba(112, 128, 176, 0.15); border: 1px solid white; } .header { display: flex; align-items: center; padding-bottom: 25px; margin-bottom: 25px; border-bottom: 2px dashed #e5e7eb; } .header img { width: 68px; height: 68px; border-radius: 50%; margin-right: 18px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); } .header-info h2 { margin: 0 0 6px 0; font-size: 24px; color: #1f2937; } .group-tag { font-size: 12px; background: var(--theme-color); color: white; padding: 3px 8px; border-radius: 6px; } .header-info p { margin: 0; font-size: 15px; color: #6b7280; } .header-info strong { color: var(--theme-color); } .batch-hint { margin-top: 6px; font-size: 12px; color: var(--theme-color); } .msg-list { display: flex; flex-direction: column; gap: 28px; } .msg-item { display: flex; gap: 16px; } .avatar { width: 46px; height: 46px; border-radius: 12px; object-fit: cover; } .msg-content { flex: 1; max-width: calc(100% - 62px); } .sender-info { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; } .sender-name { font-weight: 600; font-size: 15px; color: #374151; } .msg-time { font-size: 12px; color: #9ca3af; } .bubble { background: white; padding: 14px 18px; border-radius: 0 16px 16px 16px; font-size: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); border: 1px solid #f3f4f6; display: inline-block; max-width: 100%; } .reply-box { background: #f8fafc; border-left: 3px solid #94a3b8; padding: 6px 12px; border-radius: 4px 8px 8px 4px; font-size: 13px; color: #64748b; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; } .reply-preview { background: #f8fafc; border-left: 3px solid #94a3b8; padding: 8px 10px; border-radius: 4px 8px 8px 4px; margin-bottom: 8px; color: #64748b; } .reply-preview-header { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #475569; margin-bottom: 5px; } .reply-preview-avatar { width: 22px; height: 22px; border-radius: 50%; object-fit: cover; } .reply-preview-label { color: #94a3b8; font-size: 11px; } .reply-preview-text { font-size: 13px; line-height: 1.45; white-space: normal; word-break: break-word; } .reply-preview-image { max-width: 180px; max-height: 100px; border-radius: 6px; object-fit: cover; margin-top: 6px; display: block; } .empty-at { color: #9ca3af; font-style: italic; } .media-hint { color: var(--theme-color); font-size: 14px; margin-top: 8px; background: #f0f5ff; padding: 6px 12px; border-radius: 8px; } .msg-img { max-width: 100%; border-radius: 8px; margin-top: 10px; display: block; } .footer { margin-top: 35px; text-align: center; color: #cbd5e1; font-size: 12px; }</style></head><body><div class="container"><div class="header"><img src="https://q1.qlogo.cn/g?b=qq&nk=${targetQQ}&s=100"><div class="header-info"><h2>艾特数据报告 <span class="group-tag">${e.group_name || '本群'}</span></h2><p>${scopeText}，<strong>${targetName}</strong> 共有 <strong>${totalRecords}</strong> 条艾特记录</p>${batchText ? `<p class="batch-hint">${escapeHtml(batchText)}</p>` : ''}</div></div><div class="msg-list">${msgHtml}</div><div class="footer">Generated by 提醒助手 • ${new Date().toLocaleString()}</div></div></body></html>`;
 
             const htmlPath = path.join(
                 atDataDir,
@@ -1024,7 +1123,7 @@ export class noticePlugin extends plugin {
         const forwardMsg = await common.makeForwardMsg(
             e,
             imageMessages,
-            `📣 本群艾特记录（共 ${imageMessages.length} 页）`
+            `📣 本群${scopeLabel}艾特记录（${queryPage}/${totalQueryPages} 批，共 ${imageMessages.length} 页）`
         );
         await e.reply(forwardMsg);
         return true;
@@ -1046,6 +1145,7 @@ export class noticePlugin extends plugin {
             '',
             '【外号提醒】',
             '外号和艾特提醒默认关闭；关闭时仍会保存记录，但不会主动群内艾特或私聊提醒。',
+            '同一条消息同时触发外号、艾特和引用时，只发送一条合并后的私聊提醒。',
             '提醒能否私聊成功取决于好友关系和平台权限。',
             '',
             '【主人专用】',
@@ -1058,10 +1158,15 @@ export class noticePlugin extends plugin {
             '#清除全部艾特数据 —— 清空所有群的艾特记录',
             '',
             '【记录查询】',
-            '谁艾特我 —— 查看历史艾特记录（每张图片最多显示16条）',
-            '谁艾特他/她/它 —— 艾特目标用户后查看对方的艾特记录',
-            '谁叫我了 —— 查看当前群里呼叫过你外号的历史记录',
-            '谁叫他/她/它了 @用户 —— 查看指定用户被呼叫外号的历史记录',
+            '谁艾特我 —— 查看本群当天艾特你的记录',
+            '全部谁艾特我 [页码] —— 查看本群全部艾特记录',
+            '谁艾特他/她/它 @用户 —— 查看指定用户当天的艾特记录',
+            '全部谁艾特他/她/它 @用户 [页码] —— 查看指定用户的全部艾特记录',
+            '谁叫我了 —— 查看本群当天呼叫过你外号的记录',
+            '全部谁叫我了 [页码] —— 查看本群全部外号呼叫记录',
+            '谁叫他/她/它了 @用户 —— 查看指定用户当天的外号呼叫记录',
+            '全部谁叫他/她/它了 @用户 [页码] —— 查看指定用户的全部外号呼叫记录',
+            '记录查询每张图片最多显示16条，每次最多发送4张图片（64条）；超出请使用下一页页码。',
             '/clear_at —— 清除自己的艾特记录',
             '/clear_all —— 主人清除全部艾特记录'
         ].join('\n'));
@@ -1241,10 +1346,10 @@ export class noticePlugin extends plugin {
     }
 
     async aliasNotice(e) {
-        if (!e.isGroup || !e.msg || isAliasCommand(e.msg)) return false;
+        if (!e.isGroup || !e.msg || isAliasCommand(e.msg)) return [];
 
         const messageText = cleanAlias(e.msg);
-        if (!messageText) return false;
+        if (!messageText) return [];
 
         const matchedUsers = [];
         for (const entry of readAllAliasFiles()) {
@@ -1256,7 +1361,7 @@ export class noticePlugin extends plugin {
                 });
             }
         }
-        if (matchedUsers.length === 0) return false;
+        if (matchedUsers.length === 0) return [];
 
         const callerName = e.sender?.card || e.sender?.nickname || e.nickname || String(e.user_id);
         const callRecord = {
@@ -1302,24 +1407,7 @@ export class noticePlugin extends plugin {
             }
         }
 
-        const source = e.group_name ? `${e.group_name}(${e.group_id})` : String(e.group_id);
-        await Promise.allSettled(enabledUsers.map(async user => {
-            if (String(user.userId) === String(Bot.uin)) return;
-
-            const privateMessage = [
-                `有人在群「${source}」里提到了你的外号：${user.aliases.join('、')}\n`,
-                `提及人：${getActorDisplay(e)}\n`,
-                `时间：${formatDateTime(callRecord.timestamp)}\n`,
-                `消息：${e.msg}`
-            ];
-            try {
-                await Bot.pickUser(Number(user.userId)).sendMsg(privateMessage);
-            } catch (err) {
-                logger.warn(`外号私聊提醒发送失败：${user.userId}`, err);
-            }
-        }));
-
-        return true;
+        return matchedUsers;
     }
 
     async clearAt(e) {
